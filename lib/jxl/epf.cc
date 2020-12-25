@@ -24,14 +24,12 @@
 
 #include <algorithm>
 #include <atomic>
-#include <mutex>
 #include <numeric>  // std::accumulate
 #include <vector>
 
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "lib/jxl/epf.cc"
 #include <hwy/foreach_target.h>
-// ^ must come before highway.h and any *-inl.h.
 #include <hwy/highway.h>
 
 #include "lib/jxl/ac_strategy.h"
@@ -40,6 +38,7 @@
 #include "lib/jxl/base/status.h"
 #include "lib/jxl/common.h"
 #include "lib/jxl/convolve.h"
+#include "lib/jxl/dec_cache.h"
 #include "lib/jxl/filters.h"
 #include "lib/jxl/filters_internal.h"
 #include "lib/jxl/image.h"
@@ -155,7 +154,6 @@ void GaborishRow(const FilterRows& rows, const LoopFilter& /* lf */,
                  size_t /* sigma_y */, const FilterWeights& filter_weights,
                  size_t x0, size_t x1) {
   JXL_DASSERT(x0 % Lanes(df) == 0);
-  JXL_DASSERT(x1 % Lanes(df) == 0);
 
   const float* JXL_RESTRICT gab_weights = filter_weights.gab_weights;
   for (size_t c = 0; c < 3; c++) {
@@ -206,7 +204,6 @@ void GaborishRow(const FilterRows& rows, const LoopFilter& /* lf */,
 void Epf0Row(const FilterRows& rows, const LoopFilter& lf, size_t sigma_y,
              const FilterWeights& filter_weights, size_t x0, size_t x1) {
   JXL_DASSERT(x0 % Lanes(df) == 0);
-  JXL_DASSERT(x1 % Lanes(df) == 0);
   const float* JXL_RESTRICT row_sigma = rows.GetSigmaRow();
   const size_t iy = sigma_y % kBlockDim;
 
@@ -283,7 +280,6 @@ void Epf0Row(const FilterRows& rows, const LoopFilter& lf, size_t sigma_y,
 void Epf1Row(const FilterRows& rows, const LoopFilter& lf, size_t sigma_y,
              const FilterWeights& filter_weights, size_t x0, size_t x1) {
   JXL_DASSERT(x0 % Lanes(df) == 0);
-  JXL_DASSERT(x1 % Lanes(df) == 0);
   const float* JXL_RESTRICT row_sigma = rows.GetSigmaRow();
   const size_t iy = sigma_y % kBlockDim;
 
@@ -402,7 +398,6 @@ void Epf1Row(const FilterRows& rows, const LoopFilter& lf, size_t sigma_y,
 void Epf2Row(const FilterRows& rows, const LoopFilter& lf, size_t sigma_y,
              const FilterWeights& filter_weights, size_t x0, size_t x1) {
   JXL_DASSERT(x0 % Lanes(df) == 0);
-  JXL_DASSERT(x1 % Lanes(df) == 0);
   const float* JXL_RESTRICT row_sigma = rows.GetSigmaRow();
   const size_t iy = sigma_y % kBlockDim;
 
@@ -521,20 +516,124 @@ namespace jxl {
 
 HWY_EXPORT(FilterPipelineInit);  // Local function
 
+void ComputeSigma(const Rect& block_rect, PassesDecoderState* state) {
+  const LoopFilter& lf = state->shared->frame_header.loop_filter;
+  JXL_CHECK(lf.epf_iters > 0);
+  const AcStrategyImage& ac_strategy = state->shared->ac_strategy;
+  const float quant_scale = state->shared->quantizer.Scale();
+
+  const size_t sigma_stride = state->filter_weights.sigma.PixelsPerRow();
+  const size_t sharpness_stride = state->shared->epf_sharpness.PixelsPerRow();
+
+  for (size_t by = 0; by < block_rect.ysize(); ++by) {
+    float* JXL_RESTRICT sigma_row =
+        block_rect.Row(&state->filter_weights.sigma, by);
+    const uint8_t* JXL_RESTRICT sharpness_row =
+        block_rect.ConstRow(state->shared->epf_sharpness, by);
+    AcStrategyRow acs_row = ac_strategy.ConstRow(block_rect, by);
+    const int* const JXL_RESTRICT row_quant =
+        block_rect.ConstRow(state->shared->raw_quant_field, by);
+
+    for (size_t bx = 0; bx < block_rect.xsize(); bx++) {
+      AcStrategy acs = acs_row[bx];
+      size_t llf_x = acs.covered_blocks_x();
+      if (!acs.IsFirstBlock()) continue;
+      // quant_scale is smaller for low quality.
+      // quant_scale is roughly 0.08 / butteraugli score.
+      //
+      // row_quant is smaller for low quality.
+      // row_quant is a quantization multiplier of form 1.0 /
+      // row_quant[bx]
+      //
+      // lf.epf_quant_mul is a parameter in the format
+      // kInvSigmaNum is a constant
+      float sigma_quant =
+          lf.epf_quant_mul / (quant_scale * row_quant[bx] * kInvSigmaNum);
+      for (size_t iy = 0; iy < acs.covered_blocks_y(); iy++) {
+        for (size_t ix = 0; ix < acs.covered_blocks_x(); ix++) {
+          float sigma =
+              sigma_quant *
+              lf.epf_sharp_lut[sharpness_row[bx + ix + iy * sharpness_stride]];
+          // Avoid infinities.
+          sigma = std::min(-1e-4f, sigma);  // TODO(veluca): remove this.
+          sigma_row[bx + ix + kSigmaPadding +
+                    (iy + kSigmaPadding) * sigma_stride] = 1.0f / sigma;
+        }
+      }
+      // TODO(veluca): remove this padding.
+      // Left padding with mirroring.
+      if (bx + block_rect.x0() == 0) {
+        for (size_t iy = 0; iy < acs.covered_blocks_y(); iy++) {
+          LeftMirror(
+              sigma_row + kSigmaPadding + (iy + kSigmaPadding) * sigma_stride,
+              kSigmaBorder);
+        }
+      }
+      // Right padding with mirroring.
+      if (bx + block_rect.x0() + llf_x ==
+          state->shared->frame_dim.xsize_blocks) {
+        for (size_t iy = 0; iy < acs.covered_blocks_y(); iy++) {
+          RightMirror(sigma_row + kSigmaPadding + bx + llf_x +
+                          (iy + kSigmaPadding) * sigma_stride,
+                      kSigmaBorder);
+        }
+      }
+      // Offsets for row copying, in blocks.
+      size_t offset_before = bx + block_rect.x0() == 0 ? 1 : bx + kSigmaPadding;
+      size_t offset_after =
+          bx + block_rect.x0() + llf_x == state->shared->frame_dim.xsize_blocks
+              ? kSigmaPadding + llf_x + bx + kSigmaBorder
+              : kSigmaPadding + llf_x + bx;
+      size_t num = offset_after - offset_before;
+      // Above
+      if (by + block_rect.y0() == 0) {
+        for (size_t iy = 0; iy < kSigmaBorder; iy++) {
+          memcpy(
+              sigma_row + offset_before +
+                  (kSigmaPadding - 1 - iy) * sigma_stride,
+              sigma_row + offset_before + (kSigmaPadding + iy) * sigma_stride,
+              num * sizeof(*sigma_row));
+        }
+      }
+      // Below
+      if (by + block_rect.y0() + acs.covered_blocks_y() ==
+          state->shared->frame_dim.ysize_blocks) {
+        for (size_t iy = 0; iy < kSigmaBorder; iy++) {
+          memcpy(
+              sigma_row + offset_before +
+                  sigma_stride * (acs.covered_blocks_y() + kSigmaPadding + iy),
+              sigma_row + offset_before +
+                  sigma_stride *
+                      (acs.covered_blocks_y() + kSigmaPadding - 1 - iy),
+              num * sizeof(*sigma_row));
+        }
+      }
+    }
+  }
+}
+
 Status ApplyLoopFiltersRow(PassesDecoderState* dec_state, const Rect& rect,
                            ssize_t y, size_t thread, Image3F* JXL_RESTRICT out,
                            size_t* JXL_RESTRICT output_row) {
   JXL_DASSERT(rect.x0() % kBlockDim == 0);
+  JXL_ASSERT(dec_state->decoded_padding == kMaxFilterPadding);
   const LoopFilter& lf = dec_state->shared->frame_header.loop_filter;
   if (!lf.gab && lf.epf_iters == 0) {
     if (y < 0 || y >= static_cast<ssize_t>(rect.ysize())) return false;
     *output_row = y;
+    for (size_t c = 0; c < 3; c++) {
+      memcpy(rect.PlaneRow(out, c, y),
+             rect.ConstPlaneRow(dec_state->decoded, c, y) +
+                 dec_state->decoded_padding,
+             rect.xsize() * sizeof(float));
+    }
     return *output_row < dec_state->shared->frame_dim.ysize;
   }
   // decoded.ysize() is used for mirroring of the input image last rows. This
   // checks that the passed image is not padded beyond that.
-  JXL_DASSERT(dec_state->decoded.ysize() ==
+  JXL_DASSERT(dec_state->decoded.ysize() <=
               dec_state->shared->frame_dim.ysize_padded);
+  JXL_DASSERT(rect.IsInside(dec_state->decoded));
 
   // Lazy initialization of the FilterPipeline.
   FilterPipeline* fp = &(dec_state->filter_pipelines[thread]);

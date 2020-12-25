@@ -23,7 +23,8 @@ if(WIN32)
       icc_detect/icc_detect_win32.cc
       icc_detect/icc_detect.h
     )
-    target_link_libraries(icc_detect PUBLIC jxl-static Qt5::Widgets)
+    target_include_directories(icc_detect PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(icc_detect PUBLIC Qt5::Widgets)
     if(JPEGXL_DEP_LICENSE_DIR)
       configure_file("${JPEGXL_DEP_LICENSE_DIR}/libqt5widgets5/copyright"
                      ${PROJECT_BINARY_DIR}/LICENSE.libqt5widgets5 COPYONLY)
@@ -83,9 +84,6 @@ target_compile_definitions(cjxltool
   PRIVATE "-DJPEGXL_VERSION=\"${JPEGXL_VERSION}\"")
 target_include_directories(cjxltool
   PUBLIC "${PROJECT_SOURCE_DIR}")
-target_include_directories(cjxltool PRIVATE
-  $<TARGET_PROPERTY:brunslicommon-static,INCLUDE_DIRECTORIES>
-)
 target_link_libraries(cjxltool
     box
     jxl-static
@@ -164,9 +162,6 @@ if(${JPEGXL_ENABLE_BENCHMARK})
     speed_stats.cc
     speed_stats.h
     ../third_party/dirent.cc
-  )
-  target_include_directories(benchmark_xl PRIVATE
-    $<TARGET_PROPERTY:brunslicommon-static,INCLUDE_DIRECTORIES>
   )
   target_link_libraries(benchmark_xl Threads::Threads)
   target_compile_definitions(benchmark_xl
@@ -254,19 +249,21 @@ if(NOT ${SANITIZER} STREQUAL "none")
 endif()  # SANITIZER != "none"
 set_target_properties(libjxl_test PROPERTIES PREFIX "tests/")
 target_link_libraries(libjxl_test jxl)
+if (NOT MSVC)
 target_compile_options(libjxl_test PRIVATE -Wall -Wextra -Werror)
 if(NOT WIN32)
   target_compile_options(libjxl_test PRIVATE -pedantic)
 endif()  # NOT WIN32
+endif()  # NOT MSVC
 
 add_test(NAME LibraryCLinkageTest COMMAND libjxl_test)
 endif()  # BUILD_TESTING AND TARGET jxl AND NOT JPEGXL_EMSCRIPTEN
 
 # Tools defined in subdirectories.
 if(${JPEGXL_ENABLE_VIEWERS})
+add_subdirectory(viewer)
 add_subdirectory(comparison_viewer)
 add_subdirectory(flicker_test)
-add_subdirectory(viewer)
 endif()
 
 add_subdirectory(box)

@@ -14,16 +14,15 @@
 
 #include "tools/butteraugli_pnorm.h"
 
-#undef HWY_TARGET_INCLUDE
-#define HWY_TARGET_INCLUDE "tools/butteraugli_pnorm.cc"
-#include <hwy/foreach_target.h>
-// ^ must come before highway.h and any *-inl.h.
-
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 #include <atomic>
+
+#undef HWY_TARGET_INCLUDE
+#define HWY_TARGET_INCLUDE "tools/butteraugli_pnorm.cc"
+#include <hwy/foreach_target.h>
 #include <hwy/highway.h>
 
 #include "lib/jxl/base/compiler_specific.h"
@@ -32,6 +31,9 @@
 HWY_BEFORE_NAMESPACE();
 namespace jxl {
 namespace HWY_NAMESPACE {
+
+// These templates are not found via ADL.
+using hwy::HWY_NAMESPACE::Rebind;
 
 double ComputeDistanceP(const ImageF& distmap, const ButteraugliParams& params,
                         double p) {
@@ -52,7 +54,7 @@ double ComputeDistanceP(const ImageF& distmap, const ButteraugliParams& params,
 // Prefer double if possible, but otherwise use float rather than scalar.
 #if HWY_CAP_FLOAT64
     using T = double;
-    const HWY_CAPPED(float, MaxLanes(HWY_FULL(double)())) df;
+    const Rebind<float, HWY_FULL(double)> df;
 #else
     using T = float;
 #endif

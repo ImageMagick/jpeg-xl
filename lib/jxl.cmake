@@ -14,20 +14,6 @@
 
 # TODO(deymo): Split this into encoder and decoder targets
 set(JPEGXL_INTERNAL_SOURCES
-  jxl/modular/encoding/context_predict.h
-  jxl/modular/encoding/encoding.cc
-  jxl/modular/encoding/encoding.h
-  jxl/modular/encoding/ma.cc
-  jxl/modular/encoding/ma.h
-  jxl/modular/image/image.cc
-  jxl/modular/image/image.h
-  jxl/modular/options.h
-  jxl/modular/transform/near-lossless.h
-  jxl/modular/transform/palette.h
-  jxl/modular/transform/squeeze.h
-  jxl/modular/transform/subtractgreen.h
-  jxl/modular/transform/transform.cc
-  jxl/modular/transform/transform.h
   jxl/ac_context.h
   jxl/ac_strategy.cc
   jxl/ac_strategy.h
@@ -39,7 +25,6 @@ set(JPEGXL_INTERNAL_SOURCES
   jxl/ar_control_field.cc
   jxl/ar_control_field.h
   jxl/aux_out.cc
-  jxl/aux_out.h
   jxl/aux_out.h
   jxl/aux_out_fwd.h
   jxl/base/arch_specific.cc
@@ -53,7 +38,6 @@ set(JPEGXL_INTERNAL_SOURCES
   jxl/base/data_parallel.h
   jxl/base/descriptive_statistics.cc
   jxl/base/descriptive_statistics.h
-  jxl/base/fast_log.h
   jxl/base/file_io.h
   jxl/base/iaca.h
   jxl/base/os_specific.cc
@@ -67,6 +51,7 @@ set(JPEGXL_INTERNAL_SOURCES
   jxl/base/span.h
   jxl/base/status.cc
   jxl/base/status.h
+  jxl/base/thread_pool_internal.h
   jxl/base/tsc_timer.h
   jxl/blending.cc
   jxl/blending.h
@@ -74,6 +59,7 @@ set(JPEGXL_INTERNAL_SOURCES
   jxl/butteraugli/butteraugli.h
   jxl/chroma_from_luma.cc
   jxl/chroma_from_luma.h
+  jxl/codec_in_out.h
   jxl/coeff_order.cc
   jxl/coeff_order.h
   jxl/coeff_order_fwd.h
@@ -89,7 +75,6 @@ set(JPEGXL_INTERNAL_SOURCES
   jxl/convolve.h
   jxl/dct-inl.h
   jxl/dct_block-inl.h
-  jxl/dct_for_test.h
   jxl/dct_scales.cc
   jxl/dct_scales.h
   jxl/dct_util.h
@@ -99,8 +84,6 @@ set(JPEGXL_INTERNAL_SOURCES
   jxl/dec_cache.h
   jxl/dec_context_map.cc
   jxl/dec_context_map.h
-  jxl/dec_dct.cc
-  jxl/dec_dct.h
   jxl/dec_file.cc
   jxl/dec_file.h
   jxl/dec_frame.cc
@@ -147,8 +130,6 @@ set(JPEGXL_INTERNAL_SOURCES
   jxl/enc_comparator.h
   jxl/enc_context_map.cc
   jxl/enc_context_map.h
-  jxl/enc_dct.cc
-  jxl/enc_dct.h
   jxl/enc_fast_heuristics.cc
   jxl/enc_file.cc
   jxl/enc_file.h
@@ -178,7 +159,7 @@ set(JPEGXL_INTERNAL_SOURCES
   jxl/epf.h
   jxl/external_image.cc
   jxl/external_image.h
-  jxl/fast_log-inl.h
+  jxl/fast_math-inl.h
   jxl/field_encodings.h
   jxl/fields.cc
   jxl/fields.h
@@ -206,6 +187,20 @@ set(JPEGXL_INTERNAL_SOURCES
   jxl/image_metadata.cc
   jxl/image_metadata.h
   jxl/image_ops.h
+  jxl/jpeg/dec_jpeg_data.cc
+  jxl/jpeg/dec_jpeg_data.h
+  jxl/jpeg/dec_jpeg_data_writer.cc
+  jxl/jpeg/dec_jpeg_data_writer.h
+  jxl/jpeg/dec_jpeg_output_chunk.h
+  jxl/jpeg/dec_jpeg_serialization_state.h
+  jxl/jpeg/enc_jpeg_data.cc
+  jxl/jpeg/enc_jpeg_data.h
+  jxl/jpeg/enc_jpeg_data_reader.cc
+  jxl/jpeg/enc_jpeg_data_reader.h
+  jxl/jpeg/enc_jpeg_huffman_decode.cc
+  jxl/jpeg/enc_jpeg_huffman_decode.h
+  jxl/jpeg/jpeg_data.cc
+  jxl/jpeg/jpeg_data.h
   jxl/jxl_inspection.h
   jxl/lehmer_code.h
   jxl/linalg.cc
@@ -216,6 +211,20 @@ set(JPEGXL_INTERNAL_SOURCES
   jxl/luminance.h
   jxl/memory_manager_internal.cc
   jxl/memory_manager_internal.h
+  jxl/modular/encoding/context_predict.h
+  jxl/modular/encoding/encoding.cc
+  jxl/modular/encoding/encoding.h
+  jxl/modular/encoding/ma.cc
+  jxl/modular/encoding/ma.h
+  jxl/modular/modular_image.cc
+  jxl/modular/modular_image.h
+  jxl/modular/options.h
+  jxl/modular/transform/near-lossless.h
+  jxl/modular/transform/palette.h
+  jxl/modular/transform/squeeze.h
+  jxl/modular/transform/subtractgreen.h
+  jxl/modular/transform/transform.cc
+  jxl/modular/transform/transform.h
   jxl/noise.h
   jxl/noise_distributions.h
   jxl/opsin_params.cc
@@ -230,13 +239,12 @@ set(JPEGXL_INTERNAL_SOURCES
   jxl/progressive_split.h
   jxl/quant_weights.cc
   jxl/quant_weights.h
+  jxl/quantizer-inl.h
   jxl/quantizer.cc
   jxl/quantizer.h
-  jxl/quantizer-inl.h
   jxl/rational_polynomial-inl.h
   jxl/splines.cc
   jxl/splines.h
-  jxl/splines_fastmath.h
   jxl/toc.cc
   jxl/toc.h
   jxl/transfer_functions-inl.h
@@ -244,21 +252,10 @@ set(JPEGXL_INTERNAL_SOURCES
   jxl/xorshift128plus-inl.h
 )
 
-# Per source flags.
-set_source_files_properties(
-  jxl/dec_ans.cc
-  jxl/enc_ans.cc
-  jxl/modular/encoding/ma.cc
-  PROPERTIES COMPILE_FLAGS -Wno-sign-compare)
-
-
 set(JPEGXL_INTERNAL_LIBS
   brotlicommon-static
   brotlienc-static
   brotlidec-static
-  brunslicommon-static
-  brunslidec-static
-  brunslienc-static
   hwy
   Threads::Threads
   ${CMAKE_DL_LIBS}
@@ -281,7 +278,6 @@ target_include_directories(jxl-obj PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
   $<TARGET_PROPERTY:hwy,INTERFACE_INCLUDE_DIRECTORIES>
   $<TARGET_PROPERTY:brotlicommon-static,INTERFACE_INCLUDE_DIRECTORIES>
-  $<TARGET_PROPERTY:brunslicommon-static,INCLUDE_DIRECTORIES>
 )
 target_compile_definitions(jxl-obj PUBLIC
   JPEGXL_MAJOR_VERSION=${JPEGXL_MAJOR_VERSION}
@@ -339,7 +335,19 @@ target_compile_definitions(jxl-static INTERFACE -DJXL_EXPORT=)
 # TODO(deymo): Move TCMalloc linkage to the tools/ directory since the library
 # shouldn't do any allocs anyway.
 if(${JPEGXL_ENABLE_TCMALLOC})
-  pkg_check_modules(TCMallocMinimal REQUIRED IMPORTED_TARGET libtcmalloc_minimal)
+  pkg_check_modules(TCMallocMinimal REQUIRED IMPORTED_TARGET
+      libtcmalloc_minimal)
+  # tcmalloc 2.8 has concurrency issues that makes it sometimes return nullptr
+  # for large allocs. See https://github.com/gperftools/gperftools/issues/1204
+  # for details.
+  if(NOT TCMallocMinimal_VERSION VERSION_LESS 2.8)
+    message(FATAL_ERROR
+        "tcmalloc version >= 2.8 have a concurrency bug. You have installed "
+        "version ${TCMallocMinimal_VERSION}, please either downgrade tcmalloc "
+        "to version 2.7 or pass -DJPEGXL_ENABLE_TCMALLOC=OFF to jpeg-xl "
+        "cmake line. See the following bug for details:\n"
+        "   https://github.com/gperftools/gperftools/issues/1204\n")
+  endif()
   target_link_libraries(jxl-static PUBLIC PkgConfig::TCMallocMinimal)
 endif()  # JPEGXL_ENABLE_TCMALLOC
 

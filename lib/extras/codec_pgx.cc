@@ -257,12 +257,13 @@ Status DecodeImagePGX(const Span<const uint8_t> bytes, ThreadPool* pool,
   const bool has_alpha = false;
   const bool flipped_y = false;
   const Span<const uint8_t> span(pos, bytes.data() + bytes.size() - pos);
-  JXL_RETURN_IF_ERROR(ConvertImage(span, header.xsize, header.ysize,
-                                   io->metadata.m.color_encoding, has_alpha,
-                                   /*alpha_is_premultiplied=*/false,
-                                   io->metadata.m.GetAlphaBits(),
-                                   io->metadata.m.bit_depth.bits_per_sample,
-                                   header.big_endian, flipped_y, pool, &ib));
+  JXL_RETURN_IF_ERROR(
+      ConvertImage(span, header.xsize, header.ysize,
+                   io->metadata.m.color_encoding, has_alpha,
+                   /*alpha_is_premultiplied=*/false,
+                   io->metadata.m.bit_depth.bits_per_sample,
+                   header.big_endian ? JXL_BIG_ENDIAN : JXL_LITTLE_ENDIAN,
+                   flipped_y, pool, &ib));
   io->frames.push_back(std::move(ib));
   SetIntensityTarget(io);
   return true;
@@ -290,11 +291,11 @@ Status EncodeImagePGX(const CodecInOut* io, const ColorEncoding& c_desired,
   PaddedBytes pixels(ib.xsize() * ib.ysize() *
                      (bits_per_sample / kBitsPerByte));
   size_t stride = ib.xsize() * (bits_per_sample / kBitsPerByte);
-  JXL_RETURN_IF_ERROR(ConvertImage(
-      *transformed, bits_per_sample,
-      /*float_out=*/false, /*lossless_float=*/false, /*apply_srgb_tf=*/false,
-      /*num_channels=*/1, /*little_endian=*/false, stride, pool, pixels.data(),
-      pixels.size(), jxl::Orientation::kIdentity));
+  JXL_RETURN_IF_ERROR(ConvertImage(*transformed, bits_per_sample,
+                                   /*float_out=*/false, /*apply_srgb_tf=*/false,
+                                   /*num_channels=*/1, JXL_BIG_ENDIAN, stride,
+                                   pool, pixels.data(), pixels.size(),
+                                   jxl::Orientation::kIdentity));
 
   char header[kMaxHeaderSize];
   int header_size = 0;
@@ -317,17 +318,20 @@ void TestCodecPGX() {
     Status ok = DecodeImagePGX(MakeSpan(pgx.c_str()), pool, &io);
     JXL_CHECK(ok == true);
 
+    ScaleImage(255.f, io.Main().color());
+
     JXL_CHECK(!io.metadata.m.bit_depth.floating_point_sample);
     JXL_CHECK(io.metadata.m.bit_depth.bits_per_sample == 8);
     JXL_CHECK(io.metadata.m.color_encoding.IsGray());
     JXL_CHECK(io.xsize() == 2);
     JXL_CHECK(io.ysize() == 3);
-    JXL_CHECK(io.Main().color()->Plane(0).Row(0)[0] == 'p');
-    JXL_CHECK(io.Main().color()->Plane(0).Row(0)[1] == 'i');
-    JXL_CHECK(io.Main().color()->Plane(0).Row(1)[0] == 'x');
-    JXL_CHECK(io.Main().color()->Plane(0).Row(1)[1] == 'e');
-    JXL_CHECK(io.Main().color()->Plane(0).Row(2)[0] == 'l');
-    JXL_CHECK(io.Main().color()->Plane(0).Row(2)[1] == 's');
+    float eps = 1e-5;
+    ExpectNear<float>('p', io.Main().color()->Plane(0).Row(0)[0], eps);
+    ExpectNear<float>('i', io.Main().color()->Plane(0).Row(0)[1], eps);
+    ExpectNear<float>('x', io.Main().color()->Plane(0).Row(1)[0], eps);
+    ExpectNear<float>('e', io.Main().color()->Plane(0).Row(1)[1], eps);
+    ExpectNear<float>('l', io.Main().color()->Plane(0).Row(2)[0], eps);
+    ExpectNear<float>('s', io.Main().color()->Plane(0).Row(2)[1], eps);
   }
 
   {
@@ -338,6 +342,8 @@ void TestCodecPGX() {
 
     Status ok = DecodeImagePGX(MakeSpan(pgx.c_str()), pool, &io);
     JXL_CHECK(ok == true);
+
+    ScaleImage(255.f, io.Main().color());
 
     JXL_CHECK(!io.metadata.m.bit_depth.floating_point_sample);
     JXL_CHECK(io.metadata.m.bit_depth.bits_per_sample == 16);

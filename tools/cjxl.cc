@@ -82,16 +82,7 @@ jxl::Status LoadSaliencyMap(const std::string& filename_heatmap,
   if (!SetFromFile(filename_heatmap, &io_heatmap, pool)) {
     return JXL_FAILURE("Could not load heatmap.");
   }
-  jxl::ImageF heatmap(io_heatmap.xsize(), io_heatmap.ysize());
-  for (size_t num_row = 0; num_row < io_heatmap.ysize(); num_row++) {
-    const float* JXL_RESTRICT row_src =
-        io_heatmap.Main().color()->ConstPlaneRow(0, num_row);
-    float* JXL_RESTRICT row_dst = heatmap.Row(num_row);
-    for (size_t num_col = 0; num_col < io_heatmap.xsize(); num_col++) {
-      row_dst[num_col] = row_src[num_col] / 255.0f;
-    }
-  }
-  *out_map = std::move(heatmap);
+  *out_map = std::move(io_heatmap.Main().color()->Plane(0));
   return true;
 }
 
@@ -109,86 +100,15 @@ jxl::Status LoadSpotColors(const CompressArgs& args, jxl::CodecInOut* io) {
   example.dim_shift = 0;
   example.name = "spot";
   example.spot_color[0] = io->metadata.m.IntensityTarget();  // R
-  example.spot_color[1] = 0.0f;                            // G
-  example.spot_color[2] = 0.0f;                            // B
-  example.spot_color[3] = 1.0f;                            // A
+  example.spot_color[1] = 0.0f;                              // G
+  example.spot_color[2] = 0.0f;                              // B
+  example.spot_color[3] = 1.0f;                              // A
   io->metadata.m.extra_channel_info.push_back(example);
-  jxl::ImageU sc(spot_io.xsize(), spot_io.ysize());
-  for (size_t y = 0; y < spot_io.ysize(); ++y) {
-    const float* JXL_RESTRICT from = spot_io.Main().color()->PlaneRow(1, y);
-    uint16_t* JXL_RESTRICT to = sc.Row(y);
-    for (size_t x = 0; x < spot_io.xsize(); ++x) {
-      to[x] = from[x];
-    }
-  }
-  std::vector<jxl::ImageU> scv;
+  jxl::ImageF sc(spot_io.xsize(), spot_io.ysize());
+  jxl::CopyImageTo(spot_io.Main().color()->Plane(1), &sc);
+  std::vector<jxl::ImageF> scv;
   scv.push_back(std::move(sc));
   io->Main().SetExtraChannels(std::move(scv));
-  return true;
-}
-
-jxl::Status LoadAll(CompressArgs& args, jxl::ThreadPoolInternal* pool,
-                    jxl::CodecInOut* io, double* decode_mps) {
-  const double t0 = jxl::Now();
-
-  io->target_nits = args.intensity_target;
-  io->dec_hints = args.dec_hints;
-  io->dec_target = (args.jpeg_transcode ? jxl::DecodeTarget::kQuantizedCoeffs
-                                        : jxl::DecodeTarget::kPixels);
-  if (args.params.modular_mode && args.params.quality_pair.first == 100) {
-    io->dec_target = jxl::DecodeTarget::kLosslessFloat;
-  }
-  jxl::Codec input_codec;
-  if (!SetFromFile(args.params.file_in, io, nullptr, &input_codec)) {
-    fprintf(stderr, "Failed to read image %s.\n", args.params.file_in);
-    return false;
-  }
-  if (input_codec != jxl::Codec::kJPG) args.jpeg_transcode = false;
-
-  if (input_codec == jxl::Codec::kGIF && args.default_settings) {
-    args.params.modular_mode = true;
-    args.params.options.predictor = jxl::Predictor::Select;
-    args.params.responsive = 0;
-    args.params.colorspace = 0;
-    args.params.channel_colors_pre_transform_percent = 0;
-    args.params.channel_colors_percent = 0;
-    args.params.quality_pair.first = args.params.quality_pair.second = 100;
-  }
-  if (args.params.modular_mode && args.params.quality_pair.first < 100) {
-    if (io->metadata.m.bit_depth.floating_point_sample) {
-      // for lossy modular, pretend pfm/exr is integer data
-      io->metadata.m.SetUintSamples(12);
-    }
-  }
-  if (args.override_bitdepth != 0) {
-    if (args.override_bitdepth == 32) {
-      io->metadata.m.SetFloat32Samples();
-    } else {
-      io->metadata.m.SetUintSamples(args.override_bitdepth);
-    }
-  }
-
-  jxl::ImageF saliency_map;
-  if (!args.saliency_map_filename.empty()) {
-    if (!LoadSaliencyMap(args.saliency_map_filename, pool, &saliency_map)) {
-      fprintf(stderr, "Failed to read saliency map %s.\n",
-              args.saliency_map_filename.c_str());
-      return false;
-    }
-    args.params.saliency_map = &saliency_map;
-  }
-
-  if (args.spot_in != nullptr) {
-    if (!LoadSpotColors(args, io)) {
-      fprintf(stderr, "Failed to read spot colors %s.\n", args.spot_in);
-      return false;
-    }
-  }
-
-  const double t1 = jxl::Now();
-  const size_t pixels = io->xsize() * io->ysize();
-  *decode_mps = pixels * io->frames.size() * 1E-6 / (t1 - t0);
-
   return true;
 }
 
@@ -199,15 +119,31 @@ void SetModularQualityForBitrate(jxl::ThreadPoolInternal* pool,
   JXL_ASSERT(args->params.modular_mode);
 
   CompressArgs s = *args;  // Args for search.
-  // 5 bpp => 100, 0.1 bpp => 2
-  float quality = s.params.target_bitrate * 20;
+  float quality = -100 + target_size * 8.0 / pixels * 50;
+  if (quality > 100.f) quality = 100.f;
+  s.params.target_size = 0;
   s.params.target_bitrate = 0;
   double best_loss = 1e99;
   float best_quality = quality;
-  for (int i = 0; i < 7; ++i) {
+  float best_below = -10000.f;
+  float best_below_size = 0;
+  float best_above = 200.f;
+  float best_above_size = pixels * 15.f;
+
+  jxl::CodecInOut io;
+  double decode_mps = 0;
+
+  if (!LoadAll(*args, pool, &io, &decode_mps)) {
+    s.params.quality_pair = std::make_pair(quality, quality);
+    printf("couldn't load image\n");
+    return;
+  }
+
+  for (int i = 0; i < 10; ++i) {
     s.params.quality_pair = std::make_pair(quality, quality);
     jxl::PaddedBytes candidate;
-    bool ok = CompressJxl(pool, s, &candidate, /*print_stats=*/false);
+    bool ok = CompressJxl(io, decode_mps, pool, s,
+                          &candidate, /*print_stats=*/false);
     if (!ok) {
       printf(
           "Compression error occurred during the search for best size."
@@ -215,21 +151,33 @@ void SetModularQualityForBitrate(jxl::ThreadPoolInternal* pool,
           quality);
       break;
     }
-    printf("Quality %.1f yields %6zu bytes, %.3f bpp.\n", quality,
+    printf("Quality %.2f yields %6zu bytes, %.3f bpp.\n", quality,
            candidate.size(), candidate.size() * 8.0 / pixels);
     const double ratio = static_cast<double>(candidate.size()) / target_size;
-    const double loss = std::max(ratio, 1.0 / std::max(ratio, 1e-30));
+    const double loss = std::abs(1.0 - ratio);
     if (best_loss > loss) {
       best_quality = quality;
       best_loss = loss;
+      if (loss < 0.01f) break;
     }
-    quality /= ratio;
-    if (quality < 1) {
-      quality = 1;
+    if (quality == 100.f && ratio < 1.f) break;  // can't spend more bits
+    if (ratio > 1.f && quality < best_above) {
+      best_above = quality;
+      best_above_size = candidate.size();
     }
-    if (quality >= 100) {
-      quality = 100;
+    if (ratio < 1.f && quality > best_below) {
+      best_below = quality;
+      best_below_size = candidate.size();
     }
+    float t =
+        (target_size - best_below_size) / (best_above_size - best_below_size);
+    if (best_above > 100.f && ratio < 1.f)
+      quality = (quality + 105) / 2;
+    else if (best_above - best_below > 1000 && ratio > 1.f)
+      quality -= 1000;
+    else
+      quality = best_above * t + best_below * (1.f - t);
+    if (quality >= 100.f) quality = 100.f;
   }
   args->params.quality_pair = std::make_pair(best_quality, best_quality);
   args->params.target_bitrate = 0;
@@ -256,10 +204,21 @@ void SetParametersForSizeOrBitrate(jxl::ThreadPoolInternal* pool,
   s.params.target_bitrate = 0;
   double best_dist = 1.0;
   double best_loss = 1e99;
+
+
+  jxl::CodecInOut io;
+  double decode_mps = 0;
+  if (!LoadAll(*args, pool, &io, &decode_mps)) {
+    s.params.butteraugli_distance = static_cast<float>(dist);
+    printf("couldn't load image\n");
+    return;
+  }
+
   for (int i = 0; i < 7; ++i) {
     s.params.butteraugli_distance = static_cast<float>(dist);
     jxl::PaddedBytes candidate;
-    bool ok = CompressJxl(pool, s, &candidate, /*print_stats=*/false);
+    bool ok = CompressJxl(io, decode_mps, pool, s,
+                          &candidate, /*print_stats=*/false);
     if (!ok) {
       printf(
           "Compression error occurred during the search for best size. "
@@ -411,6 +370,10 @@ void CompressArgs::AddCommandLineOptions(CommandLineParser* cmdline) {
   cmdline->AddOptionFlag('p', "progressive",
                          "Enable progressive/responsive decoding.",
                          &progressive, &SetBooleanTrue);
+
+  cmdline->AddOptionFlag('\0', "middleout",
+                         "Put center groups first in the compressed file.",
+                         &params.middleout, &SetBooleanTrue);
 
   // Flags.
   cmdline->AddOptionFlag('\0', "progressive_ac",
@@ -704,13 +667,74 @@ jxl::Status CompressArgs::ValidateArgs(const CommandLineParser& cmdline) {
   return true;
 }
 
-jxl::Status CompressJxl(jxl::ThreadPoolInternal* pool, CompressArgs& args,
+
+jxl::Status LoadAll(CompressArgs& args, jxl::ThreadPoolInternal* pool,
+                    jxl::CodecInOut* io, double* decode_mps) {
+  const double t0 = jxl::Now();
+
+  io->target_nits = args.intensity_target;
+  io->dec_hints = args.dec_hints;
+  io->dec_target = (args.jpeg_transcode ? jxl::DecodeTarget::kQuantizedCoeffs
+                                        : jxl::DecodeTarget::kPixels);
+  jxl::Codec input_codec;
+  if (!SetFromFile(args.params.file_in, io, nullptr, &input_codec)) {
+    fprintf(stderr, "Failed to read image %s.\n", args.params.file_in);
+    return false;
+  }
+  if (input_codec != jxl::Codec::kJPG) args.jpeg_transcode = false;
+
+  if (input_codec == jxl::Codec::kGIF && args.default_settings) {
+    args.params.modular_mode = true;
+    args.params.options.predictor = jxl::Predictor::Select;
+    args.params.responsive = 0;
+    args.params.colorspace = 0;
+    args.params.channel_colors_pre_transform_percent = 0;
+    args.params.channel_colors_percent = 0;
+    args.params.quality_pair.first = args.params.quality_pair.second = 100;
+  }
+  if (args.params.modular_mode && args.params.quality_pair.first < 100) {
+    if (io->metadata.m.bit_depth.floating_point_sample) {
+      // for lossy modular, pretend pfm/exr is integer data
+      io->metadata.m.SetUintSamples(12);
+    }
+  }
+  if (args.override_bitdepth != 0) {
+    if (args.override_bitdepth == 32) {
+      io->metadata.m.SetFloat32Samples();
+    } else {
+      io->metadata.m.SetUintSamples(args.override_bitdepth);
+    }
+  }
+
+  jxl::ImageF saliency_map;
+  if (!args.saliency_map_filename.empty()) {
+    if (!LoadSaliencyMap(args.saliency_map_filename, pool, &saliency_map)) {
+      fprintf(stderr, "Failed to read saliency map %s.\n",
+              args.saliency_map_filename.c_str());
+      return false;
+    }
+    args.params.saliency_map = &saliency_map;
+  }
+
+  if (args.spot_in != nullptr) {
+    if (!LoadSpotColors(args, io)) {
+      fprintf(stderr, "Failed to read spot colors %s.\n", args.spot_in);
+      return false;
+    }
+  }
+
+  const double t1 = jxl::Now();
+  const size_t pixels = io->xsize() * io->ysize();
+  *decode_mps = pixels * io->frames.size() * 1E-6 / (t1 - t0);
+
+  return true;
+}
+
+jxl::Status CompressJxl(jxl::CodecInOut& io, double decode_mps,
+                        jxl::ThreadPoolInternal* pool, CompressArgs& args,
                         jxl::PaddedBytes* compressed, bool print_stats) {
   JXL_CHECK(pool);
 
-  jxl::CodecInOut io;
-  double decode_mps;
-  JXL_RETURN_IF_ERROR(LoadAll(args, pool, &io, &decode_mps));
   const size_t pixels = io.xsize() * io.ysize();
 
   if (args.params.target_size > 0 || args.params.target_bitrate > 0) {

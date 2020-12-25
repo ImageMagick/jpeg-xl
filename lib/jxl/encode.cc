@@ -45,76 +45,115 @@ uint32_t JxlEncoderVersion(void) {
          JPEGXL_PATCH_VERSION;
 }
 
+namespace {
+
+typedef struct JxlEncoderOptionsValuesStruct {
+  // lossless is a separate setting from cparams because it is a combination
+  // setting that overrides multiple settings inside of cparams.
+  bool lossless;
+  jxl::CompressParams cparams;
+} JxlEncoderOptionsValues;
+
 typedef struct JxlEncoderQueuedFrame {
-  JxlFrameFormat frame_format;
+  JxlPixelFormat pixel_format;
+  JxlEncoderOptionsValues option_values;
   std::vector<uint8_t> buffer;
 } JxlEncoderQueuedFrame;
 
+}  // namespace
+
 struct JxlEncoderStruct {
   JxlMemoryManager memory_manager;
-  std::unique_ptr<jxl::ThreadPool> thread_pool;
-  std::vector<std::unique_ptr<JxlEncoderQueuedFrame>> input_frame_queue;
+  jxl::MemoryManagerUniquePtr<jxl::ThreadPool> thread_pool{
+      nullptr, jxl::MemoryManagerDeleteHelper(&memory_manager)};
+  std::vector<jxl::MemoryManagerUniquePtr<JxlEncoderQueuedFrame>>
+      input_frame_queue;
+  std::vector<jxl::MemoryManagerUniquePtr<JxlEncoderOptions>> encoder_options;
   std::vector<uint8_t> output_byte_queue;
   bool wrote_headers;
   jxl::CodecMetadata metadata;
 
   JxlEncoderStatus RefillOutputByteQueue() {
-    std::unique_ptr<JxlEncoderQueuedFrame> input_frame =
+    jxl::MemoryManagerUniquePtr<JxlEncoderQueuedFrame> input_frame =
         std::move(this->input_frame_queue[0]);
     this->input_frame_queue.erase(this->input_frame_queue.begin());
 
     jxl::CodecInOut io;
     jxl::ColorEncoding c_current;
     bool has_alpha;
-    // TODO(zond): Make this accept more than bitdepth 16.
-    size_t bitdepth = 16;
+    bool is_gray;
+    size_t bitdepth;
 
-    io.metadata.m.SetUintSamples(bitdepth);
-    // TODO(zond): Make this accept more than sRGB, and also gray+alpha.
-    if (input_frame->frame_format.pixel_format.num_channels == 1) {
-      c_current = jxl::ColorEncoding::SRGB(/*is_gray=*/true);
-      has_alpha = false;
-    } else if (input_frame->frame_format.pixel_format.num_channels == 3) {
-      c_current = jxl::ColorEncoding::SRGB(/*is_gray=*/false);
-      has_alpha = false;
-    } else if (input_frame->frame_format.pixel_format.num_channels == 4) {
-      c_current = jxl::ColorEncoding::SRGB(/*is_gray=*/false);
-      has_alpha = true;
-      io.metadata.m.SetAlphaBits(bitdepth);
+    // TODO(zond): Make this accept more than float and uint8/16.
+    if (input_frame->pixel_format.data_type == JXL_TYPE_FLOAT) {
+      bitdepth = 32;
+      io.metadata.m.SetFloat32Samples();
+    } else if (input_frame->pixel_format.data_type == JXL_TYPE_UINT8) {
+      bitdepth = 8;
+      io.metadata.m.SetUintSamples(bitdepth);
+    } else if (input_frame->pixel_format.data_type == JXL_TYPE_UINT16) {
+      bitdepth = 16;
+      io.metadata.m.SetUintSamples(bitdepth);
     } else {
       return JXL_ENC_ERROR;
     }
 
+    if (input_frame->pixel_format.num_channels == 1) {
+      has_alpha = false;
+      is_gray = true;
+    } else if (input_frame->pixel_format.num_channels == 2) {
+      is_gray = true;
+      has_alpha = true;
+      io.metadata.m.SetAlphaBits(bitdepth == 32 ? 16 : bitdepth);
+    } else if (input_frame->pixel_format.num_channels == 3) {
+      is_gray = false;
+      has_alpha = false;
+    } else if (input_frame->pixel_format.num_channels == 4) {
+      is_gray = false;
+      has_alpha = true;
+      io.metadata.m.SetAlphaBits(bitdepth == 32 ? 16 : bitdepth);
+    } else {
+      return JXL_ENC_ERROR;
+    }
+
+    if (input_frame->pixel_format.data_type == JXL_TYPE_FLOAT) {
+      c_current = jxl::ColorEncoding::LinearSRGB(is_gray);
+    } else {
+      c_current = jxl::ColorEncoding::SRGB(is_gray);
+    }
+    io.metadata.m.color_encoding = c_current;
+
     if (!ConvertImage(jxl::Span<const uint8_t>(input_frame->buffer.data(),
                                                input_frame->buffer.size()),
-                      input_frame->frame_format.frame_width,
-                      input_frame->frame_format.frame_height, c_current,
-                      has_alpha, /*alpha_is_premultiplied=*/false,
-                      /*bits_per_alpha=*/has_alpha ? bitdepth : 0, bitdepth,
-                      /*big_endian=*/true,
-                      /*flipped_y=*/false, this->thread_pool.get(),
-                      &io.Main())) {
+                      metadata.xsize(), metadata.ysize(), c_current, has_alpha,
+                      /*alpha_is_premultiplied=*/false, bitdepth,
+                      input_frame->pixel_format.endianness, /*flipped_y=*/false,
+                      this->thread_pool.get(), &io.Main())) {
       return JXL_ENC_ERROR;
     }
     io.SetSize(io.Main().xsize(), io.Main().ysize());
     io.CheckMetadata();
 
-    jxl::CompressParams cparams;
+    jxl::CompressParams cparams = input_frame->option_values.cparams;
+    if (input_frame->option_values.lossless) {
+      cparams.SetLossless();
+    }
+
     jxl::BitWriter writer;
 
     if (!wrote_headers) {
-      if (!WriteHeaders(cparams, &io, &this->metadata, &writer, nullptr)) {
+      if (!WriteHeaders(cparams, &io, &metadata, &writer, nullptr)) {
         return JXL_ENC_ERROR;
       }
       // Only send ICC (at least several hundred bytes) if fields aren't enough.
-      if (this->metadata.m.color_encoding.WantICC()) {
-        if (!jxl::WriteICC(this->metadata.m.color_encoding.ICC(), &writer,
+      if (metadata.m.color_encoding.WantICC()) {
+        if (!jxl::WriteICC(metadata.m.color_encoding.ICC(), &writer,
                            jxl::kLayerHeader, nullptr)) {
           return JXL_ENC_ERROR;
         }
       }
-      if (this->metadata.m.have_preview) {
-        if (!jxl::EncodePreview(cparams, io.preview_frame, &this->metadata,
+      if (metadata.m.have_preview) {
+        if (!jxl::EncodePreview(cparams, io.preview_frame, &metadata,
                                 this->thread_pool.get(), &writer)) {
           return JXL_ENC_ERROR;
         }
@@ -131,9 +170,9 @@ struct JxlEncoderStruct {
     //             last animation frame).
 
     jxl::PassesEncoderState enc_state;
-    if (!jxl::EncodeFrame(cparams, jxl::FrameInfo{}, &this->metadata,
-                          io.frames[0], &enc_state, this->thread_pool.get(),
-                          &writer, /*aux_out=*/nullptr)) {
+    if (!jxl::EncodeFrame(cparams, jxl::FrameInfo{}, &metadata, io.frames[0],
+                          &enc_state, this->thread_pool.get(), &writer,
+                          /*aux_out=*/nullptr)) {
       return JXL_ENC_ERROR;
     }
 
@@ -144,6 +183,59 @@ struct JxlEncoderStruct {
   }
 };
 
+struct JxlEncoderOptionsStruct {
+  JxlEncoder* enc;
+  JxlEncoderOptionsValues values;
+};
+
+JxlEncoderStatus JxlEncoderSetDimensions(JxlEncoder* enc, const size_t xsize,
+                                         const size_t ysize) {
+  if (enc->metadata.size.Set(xsize, ysize)) {
+    return JXL_ENC_SUCCESS;
+  }
+  return JXL_ENC_ERROR;
+}
+
+JxlEncoderOptions* JxlEncoderOptionsCreate(JxlEncoder* enc,
+                                           const JxlEncoderOptions* source) {
+  auto opts =
+      jxl::MemoryManagerMakeUnique<JxlEncoderOptions>(&enc->memory_manager);
+  if (!opts) return nullptr;
+  opts->enc = enc;
+  if (source != nullptr) {
+    opts->values = source->values;
+  } else {
+    opts->values.lossless = false;
+  }
+  JxlEncoderOptions* ret = opts.get();
+  enc->encoder_options.emplace_back(std::move(opts));
+  return ret;
+}
+
+JxlEncoderStatus JxlEncoderOptionsSetLossless(JxlEncoderOptions* options,
+                                              const JXL_BOOL lossless) {
+  options->values.lossless = lossless;
+  return JXL_ENC_SUCCESS;
+}
+
+JxlEncoderStatus JxlEncoderOptionsSetEffort(JxlEncoderOptions* options,
+                                            const int effort) {
+  if (effort < 3 || effort > 9) {
+    return JXL_ENC_ERROR;
+  }
+  options->values.cparams.speed_tier = static_cast<jxl::SpeedTier>(10 - effort);
+  return JXL_ENC_SUCCESS;
+}
+
+JxlEncoderStatus JxlEncoderOptionsSetDistance(JxlEncoderOptions* options,
+                                              float distance) {
+  if (distance < 0 || distance > 15) {
+    return JXL_ENC_ERROR;
+  }
+  options->values.cparams.butteraugli_distance = distance;
+  return JXL_ENC_SUCCESS;
+}
+
 JxlEncoder* JxlEncoderCreate(const JxlMemoryManager* memory_manager) {
   JxlMemoryManager local_memory_manager;
   if (!jxl::MemoryManagerInit(&local_memory_manager, memory_manager)) {
@@ -153,7 +245,6 @@ JxlEncoder* JxlEncoderCreate(const JxlMemoryManager* memory_manager) {
   void* alloc =
       jxl::MemoryManagerAlloc(&local_memory_manager, sizeof(JxlEncoder));
   if (!alloc) return nullptr;
-  // Placement new constructor on allocated memory
   JxlEncoder* enc = new (alloc) JxlEncoder();
   enc->memory_manager = local_memory_manager;
   enc->wrote_headers = false;
@@ -173,20 +264,30 @@ JxlEncoderStatus JxlEncoderSetParallelRunner(JxlEncoder* enc,
                                              JxlParallelRunner parallel_runner,
                                              void* parallel_runner_opaque) {
   if (enc->thread_pool) return JXL_API_ERROR("parallel runner already set");
-  enc->thread_pool.reset(
-      new jxl::ThreadPool(parallel_runner, parallel_runner_opaque));
+  enc->thread_pool = jxl::MemoryManagerMakeUnique<jxl::ThreadPool>(
+      &enc->memory_manager, parallel_runner, parallel_runner_opaque);
+  if (!enc->thread_pool) {
+    return JXL_ENC_ERROR;
+  }
   return JXL_ENC_SUCCESS;
 }
 
-JxlEncoderStatus JxlEncoderAddImageFrame(JxlEncoder* enc,
-                                         const JxlFrameFormat* frame_format,
+JxlEncoderStatus JxlEncoderAddImageFrame(JxlEncoderOptions* options,
+                                         const JxlPixelFormat* pixel_format,
                                          void* buffer, size_t size) {
   // TODO(zond): Return error if the input has been closed.
-  enc->input_frame_queue.push_back(
-      std::unique_ptr<JxlEncoderQueuedFrame>(new JxlEncoderQueuedFrame{
-          *frame_format,
+  auto frame = jxl::MemoryManagerMakeUnique<JxlEncoderQueuedFrame>(
+      &options->enc->memory_manager,
+      // JxlEncoderQueuedFrame is a struct with no constructors, so we use the
+      // default move constructor there.
+      JxlEncoderQueuedFrame{
+          *pixel_format, options->values,
           std::vector<uint8_t>(static_cast<uint8_t*>(buffer),
-                               static_cast<uint8_t*>(buffer) + size)}));
+                               static_cast<uint8_t*>(buffer) + size)});
+  if (!frame) {
+    return JXL_ENC_ERROR;
+  }
+  options->enc->input_frame_queue.emplace_back(std::move(frame));
   return JXL_ENC_SUCCESS;
 }
 

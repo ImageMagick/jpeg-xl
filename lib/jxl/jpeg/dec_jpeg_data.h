@@ -12,18 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef LIB_JXL_ENC_DCT_H_
-#define LIB_JXL_ENC_DCT_H_
+#ifndef LIB_JXL_JPEG_JPEG_DEC_JPEG_DATA_H_
+#define LIB_JXL_JPEG_JPEG_DEC_JPEG_DATA_H_
 
-// DCT interface.
-
-#include "lib/jxl/base/data_parallel.h"
-#include "lib/jxl/image.h"
+#include "lib/jxl/base/span.h"
+#include "lib/jxl/base/status.h"
+#include "lib/jxl/jpeg/jpeg_data.h"
 
 namespace jxl {
-
-ImageF Dct8(const ImageF& image);
-
+namespace jpeg {
+Status DecodeJPEGData(Span<const uint8_t> encoded, JPEGData* jpeg_data);
+}
 }  // namespace jxl
 
-#endif  // LIB_JXL_ENC_DCT_H_
+#endif

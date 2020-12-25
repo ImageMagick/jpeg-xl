@@ -28,15 +28,16 @@ int CompressJpegXlMain(int argc, const char* argv[]) {
   CompressArgs args;
   args.AddCommandLineOptions(&cmdline);
 
-  bool printhelp = false;
   if (!cmdline.Parse(argc, argv)) {
-    printhelp = true;
+    // Parse already printed the actual error cause.
+    fprintf(stderr, "Use '%s -h' for more information\n", argv[0]);
+    return 1;
   }
 
   if (args.version) {
-    fprintf(stderr, "cjxl [%s]\n",
+    fprintf(stdout, "cjxl [%s]\n",
             CodecConfigString(JxlEncoderVersion()).c_str());
-    fprintf(stderr, "Copyright (c) the JPEG XL Project\n");
+    fprintf(stdout, "Copyright (c) the JPEG XL Project\n");
     return 0;
   }
 
@@ -46,21 +47,47 @@ int CompressJpegXlMain(int argc, const char* argv[]) {
             CodecConfigString(JxlEncoderVersion()).c_str());
   }
 
-  if (printhelp || !args.ValidateArgs(cmdline)) {
+  if (cmdline.HelpFlagPassed()) {
     cmdline.PrintHelp();
+    return 0;
+  }
+
+  if (!args.ValidateArgs(cmdline)) {
+    // ValidateArgs already printed the actual error cause.
+    fprintf(stderr, "Use '%s -h' for more information\n", argv[0]);
     return 1;
   }
 
   jxl::PaddedBytes compressed;
 
   jxl::ThreadPoolInternal pool(args.num_threads);
-  if (!CompressJxl(&pool, args, &compressed, !args.quiet)) return 1;
+  jxl::CodecInOut io;
+  double decode_mps = 0;
+  JXL_RETURN_IF_ERROR(LoadAll(args, &pool, &io, &decode_mps));
+  if (!CompressJxl(io, decode_mps, &pool, args, &compressed, !args.quiet)) {
+    return 1;
+  }
 
   if (args.use_container &&
       !IsContainerHeader(compressed.data(), compressed.size())) {
     JpegXlContainer container;
     container.codestream = compressed.data();
     container.codestream_size = compressed.size();
+    if (!io.blobs.exif.empty()) {
+      container.exif = io.blobs.exif.data();
+      container.exif_size = io.blobs.exif.size();
+    }
+    auto append_xml = [&container](const jxl::PaddedBytes& bytes) {
+      if (bytes.empty()) return;
+      container.xml.push_back(std::make_pair(bytes.data(), bytes.size()));
+    };
+    append_xml(io.blobs.iptc);
+    append_xml(io.blobs.xmp);
+    if (!io.blobs.jumbf.empty()) {
+      container.jumb = io.blobs.jumbf.data();
+      container.jumb_size = io.blobs.jumbf.size();
+    }
+
     jxl::PaddedBytes container_file;
     if (!EncodeJpegXlContainerOneShot(container, &container_file)) {
       fprintf(stderr, "Failed to encode container format\n");
@@ -70,7 +97,10 @@ int CompressJpegXlMain(int argc, const char* argv[]) {
   }
 
   if (args.file_out) {
-    if (!jxl::WriteFile(compressed, args.file_out)) return 1;
+    if (!jxl::WriteFile(compressed, args.file_out)) {
+      fprintf(stderr, "Failed to write to \"%s\"\n", args.file_out);
+      return 1;
+    }
   }
 
   if (args.print_profile == jxl::Override::kOn) {

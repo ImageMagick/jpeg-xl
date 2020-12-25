@@ -72,6 +72,18 @@ enum class ColorTransform : uint32_t {
            // !ImageBundle::xyb_encoded.
 };
 
+inline std::array<int, 3> JpegOrder(ColorTransform ct, bool is_gray) {
+  if (is_gray) {
+    return {0, 0, 0};
+  }
+  JXL_ASSERT(ct != ColorTransform::kXYB);
+  if (ct == ColorTransform::kYCbCr) {
+    return {1, 0, 2};
+  } else {
+    return {0, 1, 2};
+  }
+}
+
 struct YCbCrChromaSubsampling : public Fields {
   YCbCrChromaSubsampling();
   const char* Name() const override { return "YCbCrChromaSubsampling"; }
@@ -89,6 +101,9 @@ struct YCbCrChromaSubsampling : public Fields {
 
   uint8_t MaxHShift() const { return maxhs_; }
   uint8_t MaxVShift() const { return maxvs_; }
+
+  uint8_t RawHShift(size_t c) { return kHShift[channel_mode_[c]]; }
+  uint8_t RawVShift(size_t c) { return kVShift[channel_mode_[c]]; }
 
   // Uses JPEG channel order (Y, Cb, Cr).
   Status Set(const uint8_t* hsample, const uint8_t* vsample) {
@@ -279,6 +294,9 @@ enum FrameType {
   // A PatchesSource frame: this frame will be only used as a source frame for
   // taking patches. Can be cropped, but cannot have non-(0, 0) x0 and y0.
   kReferenceOnly = 2,
+  // Same as kRegularFrame, but not used for progressive rendering. This also
+  // implies no early display of DC.
+  kSkipProgressive = 3,
 };
 
 // Image/frame := one of more of these, where the last has is_last = true.
@@ -434,7 +452,8 @@ struct FrameHeader : public Fields {
     FrameDimensions frame_dim;
     frame_dim.Set(xsize, ysize, group_size_shift,
                   chroma_subsampling.MaxHShift(),
-                  chroma_subsampling.MaxVShift(), upsampling);
+                  chroma_subsampling.MaxVShift(),
+                  encoding == FrameEncoding::kModular, upsampling);
     return frame_dim;
   }
 

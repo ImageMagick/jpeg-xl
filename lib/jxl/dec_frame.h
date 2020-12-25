@@ -57,9 +57,8 @@ Status SkipFrame(const CodecMetadata& metadata, BitReader* JXL_RESTRICT reader,
                  bool is_preview = false);
 
 // Decodes the global DC info from a frame section, exposed for use by API.
-Status DecodeGlobalDCInfo(size_t downsampling, BitReader* reader,
-                          ImageBundle* decoded, PassesDecoderState* state,
-                          ThreadPool* pool);
+Status DecodeGlobalDCInfo(size_t downsampling, BitReader* reader, bool is_jpeg,
+                          PassesDecoderState* state, ThreadPool* pool);
 
 // Decodes the DC image, exposed for use by API.
 // aux_outs may be nullptr if aux_out is nullptr.
@@ -69,7 +68,8 @@ Status DecodeDC(const FrameHeader& frame_header, PassesDecoderState* dec_state,
                 const std::vector<uint64_t>& group_offsets,
                 const std::vector<uint32_t>& group_sizes,
                 ThreadPool* JXL_RESTRICT pool, BitReader* JXL_RESTRICT reader,
-                std::vector<AuxOut>* aux_outs, AuxOut* JXL_RESTRICT aux_out);
+                std::vector<AuxOut>* aux_outs, AuxOut* JXL_RESTRICT aux_out,
+                std::vector<bool>* has_dc_group = nullptr);
 
 }  // namespace jxl
 

@@ -14,13 +14,12 @@
 
 #include "lib/jxl/enc_xyb.h"
 
+#include <algorithm>
+#include <cstdlib>
+
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "lib/jxl/enc_xyb.cc"
 #include <hwy/foreach_target.h>
-// ^ must come before highway.h and any *-inl.h.
-
-#include <algorithm>
-#include <cstdlib>
 #include <hwy/highway.h>
 
 #include "lib/jxl/aux_out_fwd.h"
@@ -162,13 +161,10 @@ void LinearRGBToXYB(const V r, const V g, const V b,
   // For wide-gamut inputs, r/g/b and valx (but not y/z) are often negative.
 }
 
-// Input/output uses the codec.h scaling: nominally 0-255 if in-gamut.
+// Input/output uses the codec.h scaling: nominally 0-1 if in-gamut.
 template <class V>
-V LinearFromSRGB(V v255) {
-  const HWY_FULL(float) d;
-  const auto encoded = v255 * Set(d, 1.0f / 255);
-  const auto display = TF_SRGB().DisplayFromEncoded(encoded);
-  return display * Set(d, 255.0f);
+V LinearFromSRGB(V encoded) {
+  return TF_SRGB().DisplayFromEncoded(encoded);
 }
 
 void LinearSRGBToXYB(const Image3F& linear,
@@ -269,7 +265,7 @@ void SRGBToXYBAndLinear(const Image3F& srgb,
 // it does not contain a sensitivity multiplier based on the blurred image.
 const ImageBundle* ToXYB(const ImageBundle& in, ThreadPool* pool,
                          Image3F* JXL_RESTRICT xyb,
-                         ImageBundle* JXL_RESTRICT linear) {
+                         ImageBundle* const JXL_RESTRICT linear) {
   PROFILER_FUNC;
 
   const size_t xsize = in.xsize();
@@ -321,20 +317,26 @@ const ImageBundle* ToXYB(const ImageBundle& in, ThreadPool* pool,
   }
 
   // General case: not sRGB, need color transform.
-  ImageBundle linear_storage;
-  // Caller didn't ask for linear, create our own local storage
-  if (!want_linear) {
+  ImageBundle linear_storage;  // Local storage only used if !want_linear.
+
+  ImageBundle* linear_storage_ptr;
+  if (want_linear) {
+    // Caller asked for linear, use that storage directly.
+    linear_storage_ptr = linear;
+  } else {
+    // Caller didn't ask for linear, create our own local storage
     // OK to reuse metadata, it will not be changed.
     linear_storage = ImageBundle(const_cast<ImageMetadata*>(in.metadata()));
-    linear = &linear_storage;
+    linear_storage_ptr = &linear_storage;
   }
 
   const ImageBundle* ptr;
-  JXL_CHECK(TransformIfNeeded(in, c_linear_srgb, pool, linear, &ptr));
+  JXL_CHECK(
+      TransformIfNeeded(in, c_linear_srgb, pool, linear_storage_ptr, &ptr));
   // If no transform was necessary, should have taken the above codepath.
-  JXL_ASSERT(ptr == linear);
+  JXL_ASSERT(ptr == linear_storage_ptr);
 
-  LinearSRGBToXYB(*linear->color(), premul_absorb, pool, xyb);
+  LinearSRGBToXYB(*linear_storage_ptr->color(), premul_absorb, pool, xyb);
   return want_linear ? linear : &in;
 }
 
@@ -352,7 +354,7 @@ void RgbToYcbcr(const ImageF& r_plane, const ImageF& g_plane,
 
   // Full-range BT.601 as defined by JFIF Clause 7:
   // https://www.itu.int/rec/T-REC-T.871-201105-I/en
-  const auto k128 = Set(df, 128.0f);
+  const auto k128 = Set(df, 128.0f / 255);
   const auto kR = Set(df, 0.299f);  // NTSC luma
   const auto kG = Set(df, 0.587f);
   const auto kB = Set(df, 0.114f);

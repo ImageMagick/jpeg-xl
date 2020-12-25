@@ -50,10 +50,6 @@ inline void Rgb2Lab(float r, float g, float b, float* L, float* A, float* B) {
   const float epsilon = 0.00885645167903563081f;
   const float s = 0.13793103448275862068f;
   const float k = 7.78703703703703703703f;
-  const float scale = 1.0f / 255.0f;
-  r *= scale;
-  g *= scale;
-  b *= scale;
   float fx = (r * 0.43393624408206207259f + g * 0.37619779063650710152f +
               b * 0.18983429773803261441f);
   float fy = (r * 0.2126729f + g * 0.7151522f + b * 0.0721750f);
@@ -278,13 +274,13 @@ void Ssimulacra::PrintDetails() const {
   }
 }
 
-Ssimulacra ComputeDiff(const Image3F& img1_arg, const Image3F& img2_arg) {
+Ssimulacra ComputeDiff(const Image3F& orig, const Image3F& distorted) {
   Ssimulacra ssimulacra;
 
-  Image3F img1 = Rgb2Lab(img1_arg);
-  Image3F img2 = Rgb2Lab(img2_arg);
+  Image3F img1 = Rgb2Lab(orig);
+  Image3F img2 = Rgb2Lab(distorted);
 
-  Image3F mul(img1_arg.xsize(), img1_arg.ysize());
+  Image3F mul(orig.xsize(), orig.ysize());
   Blur blur(img1.xsize(), img1.ysize());
 
   for (int scale = 0; scale < kNumScales; scale++) {

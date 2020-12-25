@@ -43,10 +43,10 @@
 #include "lib/jxl/base/span.h"
 #include "lib/jxl/base/status.h"
 #include "lib/jxl/base/thread_pool_internal.h"
-#include "lib/jxl/butteraugli/butteraugli.h"
 #include "lib/jxl/codec_in_out.h"
 #include "lib/jxl/color_encoding_internal.h"
 #include "lib/jxl/color_management.h"
+#include "lib/jxl/enc_butteraugli_comparator.h"
 #include "lib/jxl/image.h"
 #include "lib/jxl/image_bundle.h"
 #include "lib/jxl/image_ops.h"
@@ -78,33 +78,6 @@ Status ReadPNG(const std::string& filename, Image3B* image) {
   CodecInOut io;
   JXL_CHECK(SetFromFile(filename, &io));
   *image = StaticCastImage3<uint8_t>(*io.Main().color());
-  return true;
-}
-
-static bool HasValidAlpha(const CodecInOut& io) {
-  // Test whether the image doesn't have invalid alpha channel values in the
-  // image bundle (values larger than the bit depth indicates), otherwise
-  // an assert (which immediately exits the binary) gets triggered in
-  // external_image.cc.
-  const ImageBundle& ib = io.Main();
-  if (ib.HasAlpha()) {
-    size_t actual_max = MaxAlpha(ib.metadata()->GetAlphaBits());
-    const ImageU& alpha = ib.alpha();
-    for (size_t y = 0; y < alpha.ysize(); ++y) {
-      auto* const JXL_RESTRICT row = alpha.Row(y);
-      for (size_t x = 0; x < alpha.xsize(); ++x) {
-        if (row[x] > actual_max) {
-          if (!Args()->silent_errors) {
-            JXL_WARNING(
-                "alpha value too large for given bit depth:"
-                " depth: %d, value: %d",
-                ib.metadata()->GetAlphaBits(), row[x]);
-          }
-          return false;
-        }
-      }
-    }
-  }
   return true;
 }
 
@@ -204,13 +177,6 @@ void DoCompress(const std::string& filename, const CodecInOut& io,
   std::string name = FileBaseName(filename);
   std::string codec_name = codec->description();
 
-  if (valid && !HasValidAlpha(io2)) {
-    valid = false;
-    if (!Args()->silent_errors) {
-      JXL_WARNING("invalid alpha in decoder result: codec: %s, file: %s",
-                  codec_name.c_str(), name.c_str());
-    }
-  }
   if (!valid) {
     s->total_errors++;
   }
@@ -239,27 +205,9 @@ void DoCompress(const std::string& filename, const CodecInOut& io,
       ImageBundle& ib2 = io2.frames[i];
 
       // Verify output
-      // TODO(robryk): Reenable once we reproduce the same alpha bitdepth.
-      // Currently alpha equality is sort-of included in Butteraugli distance.
-#if 0
-      JXL_CHECK(ib1.HasAlpha() == ib2.HasAlpha());
-      if (ib1.HasAlpha()) {
-        JXL_CHECK(SamePixels(ib1.alpha(), ib2.alpha()));
-      }
-#endif
-
       PROFILER_ZONE("Benchmark stats");
       float distance;
       if (SameSize(ib1, ib2)) {
-        // This needs to be ib2 because the codec will have set it on the
-        // encoded image if needed, but we currently don't set it on the
-        // reference.
-        Image3F linear_rgb1, linear_rgb2;
-        JXL_CHECK(ib1.CopyTo(Rect(ib1), ColorEncoding::LinearSRGB(ib1.IsGray()),
-                             &linear_rgb1, inner_pool));
-        JXL_CHECK(ib2.CopyTo(Rect(ib2), ColorEncoding::LinearSRGB(ib2.IsGray()),
-                             &linear_rgb2, inner_pool));
-        double distance_double;
         ButteraugliParams params = codec->BaParams();
         if (ib1.metadata()->IntensityTarget() !=
             ib2.metadata()->IntensityTarget()) {
@@ -268,10 +216,8 @@ void DoCompress(const std::string& filename, const CodecInOut& io,
                   "targets");
         }
         params.intensity_target = ib1.metadata()->IntensityTarget();
-        JXL_CHECK(ButteraugliInterface(linear_rgb1, linear_rgb2, params,
-                                       distmap, distance_double));
-        distance = static_cast<float>(distance_double);
-        // Ensure pixels in range 0-255
+        distance = ButteraugliDistance(ib1, ib2, params, &distmap, inner_pool);
+        // Ensure pixels in range 0-1
         s->distance_2 += ComputeDistance2(ib1, ib2);
       } else {
         // TODO(veluca): re-upsample and compute proper distance.
@@ -655,10 +601,10 @@ struct StatPrinter {
 
     const double rmse =
         std::sqrt(t.stats.distance_2 / t.stats.total_input_pixels);
-    const double psnr =
-        t.stats.total_compressed_size == 0
-            ? 0.0
-            : (t.stats.distance_2 == 0) ? 99.99 : (20 * std::log10(255 / rmse));
+    const double psnr = t.stats.total_compressed_size == 0 ? 0.0
+                        : (t.stats.distance_2 == 0)
+                            ? 99.99
+                            : (20 * std::log10(1 / rmse));
     size_t pixels = t.stats.total_input_pixels;
 
     const double enc_mps =

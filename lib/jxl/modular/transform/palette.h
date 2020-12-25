@@ -21,7 +21,7 @@
 #include "lib/jxl/base/status.h"
 #include "lib/jxl/common.h"
 #include "lib/jxl/modular/encoding/context_predict.h"
-#include "lib/jxl/modular/image/image.h"
+#include "lib/jxl/modular/modular_image.h"
 
 namespace jxl {
 
@@ -49,27 +49,78 @@ static pixel_type GetPaletteValue(const pixel_type *const palette, int index,
   if (index < 0) {
     static constexpr std::array<std::array<pixel_type, 3>, 72> kDeltaPalette = {
         {
-            {0, 0, 0},       {-4, -4, -4},    {-9, 0, 0},     {0, 0, -13},
-            {0, -12, 0},     {-10, -10, -10}, {-18, -18, -18}, {-28, -28, -28},
-            {0, 0, -32},     {-32, 0, 0},     {-36, -36, -36}, {0, -32, -32},
-            {-17, -17, 0},
-            {24, 24, 45},    {50, 50, 50},    {-45, -24, -24}, {-24, -45, -45},
-            {0, -24, -24},   {-24, 0, -24},
-            {-32, -32, 0},   {-45, -45, -24}, {64, 64, 64},    {-32, 0, -32},
-            {0, -32, 0},     {-32, 0, 32},    {-24, -45, -24}, {24, -24, -45},
-            {80, 80, 80},    {45, 24, 45},    {-45, -24, 24},  {64, 0, 0},
-            {0, 0, -64},     {0, -64, -64},   {-24, -24, 45},  {96, 96, 96},
-            {64, 64, 0},     {45, -24, -24},  {32, -32, 0},    {112, 112, 112},
-            {24, -45, -45},  {45, 45, -24},   {0, -32, 32},    {24, -24, 45},
-            {0, 96, 96},     {45, -24, 24},   {24, -45, -24},  {-24, -45, 24},
-            {0, -64, 0},     {96, 0, 0},      {128, 128, 128}, {64, 0, 64},
-            {144, 144, 144}, {96, 96, 0},     {-36, -36, 36},  {45, -24, -45},
-            {45, -45, -24},  {0, 0, -96},     {0, 128, 128},   {0, 96, 0},
-            {45, 24, -45},   {-128, 0, 0},    {24, -45, 24},   {-45, 24, -45},
-            {64, 0, -64},    {64, -64, -64},  {96, 0, 96},     {45, -45, 24},
-            {24, 45, -45},   {64, 64, -64},   {128, 128, 0},   {0, 0, -128},
+            {0, 0, 0},
+            {4, 4, 4},
+            {11, 0, 0},
+            {0, 0, -13},
+            {0, -12, 0},
+            {-10, -10, -10},
+            {-18, -18, -18},
+            {-27, -27, -27},
+            {-18, -18, 0},
+            {0, 0, -32},
+            {-32, 0, 0},
+            {-37, -37, -37},
+            {0, -32, -32},
+            {24, 24, 45},
+            {50, 50, 50},
+            {-45, -24, -24},
+            {-24, -45, -45},
+            {0, -24, -24},
+            {-34, -34, 0},
+            {-24, 0, -24},
+            {-45, -45, -24},
+            {64, 64, 64},
+            {-32, 0, -32},
+            {0, -32, 0},
+            {-32, 0, 32},
+            {-24, -45, -24},
+            {45, 24, 45},
+            {24, -24, -45},
+            {-45, -24, 24},
+            {80, 80, 80},
+            {64, 0, 0},
+            {0, 0, -64},
+            {0, -64, -64},
+            {-24, -24, 45},
+            {96, 96, 96},
+            {64, 64, 0},
+            {45, -24, -24},
+            {34, -34, 0},
+            {112, 112, 112},
+            {24, -45, -45},
+            {45, 45, -24},
+            {0, -32, 32},
+            {24, -24, 45},
+            {0, 96, 96},
+            {45, -24, 24},
+            {24, -45, -24},
+            {-24, -45, 24},
+            {0, -64, 0},
+            {96, 0, 0},
+            {128, 128, 128},
+            {64, 0, 64},
+            {144, 144, 144},
+            {96, 96, 0},
+            {-36, -36, 36},
+            {45, -24, -45},
+            {45, -45, -24},
+            {0, 0, -96},
+            {0, 128, 128},
+            {0, 96, 0},
+            {45, 24, -45},
+            {-128, 0, 0},
+            {24, -45, 24},
+            {-45, 24, -45},
+            {64, 0, -64},
+            {64, -64, -64},
+            {96, 0, 96},
+            {45, -45, 24},
+            {24, 45, -45},
+            {64, 64, -64},
+            {128, 128, 0},
+            {0, 0, -128},
             {-24, 45, -45},
-
         }};
     if (c >= kDeltaPalette[0].size()) {
       return 0;
@@ -94,7 +145,7 @@ static pixel_type GetPaletteValue(const pixel_type *const palette, int index,
     }
     index %= kSmallCube;
     return (index * ((1 << bit_depth) - 1)) / kSmallCube +
-           ((1 << bit_depth) - 1) / 12;
+        (1 << (std::max(0, bit_depth - 3)));
   } else if (palette_size + kLargeCubeOffset <= index) {
     index -= palette_size + kLargeCubeOffset;
     if (c > 0) {
@@ -117,11 +168,26 @@ template <typename T, typename U>
 float ColorDistance(const T &JXL_RESTRICT a, const U &JXL_RESTRICT b) {
   JXL_ASSERT(a.size() == b.size());
   float distance = 0;
+  float ave3 = 0;
+  if (a.size() >= 3) {
+    ave3 = (a[0] + b[0] + a[1] + b[1] + a[2] + b[2]) * (1.21f / 3.0f);
+  }
   float sum_a = 0, sum_b = 0;
   for (size_t c = 0; c < a.size(); ++c) {
     const float difference =
         static_cast<float>(a[c]) - static_cast<float>(b[c]);
-    const int weight = c == 0 ? 3 : c == 1 ? 5 : 2;
+    float weight = c == 0 ? 3 : c == 1 ? 5 : 2;
+    if (c < 3 && (a[c] + b[c] >= ave3)) {
+      const float add_w[3] = {
+        1.15,
+        1.15,
+        1.12,
+      };
+      weight += add_w[c];
+      if (c == 2 && ((a[2] + b[2]) < 1.22 * ave3)) {
+        weight -= 0.5;
+      }
+    }
     distance += difference * difference * weight * weight;
     const int sum_weight = c == 0 ? 3 : c == 1 ? 5 : 1;
     sum_a += a[c] * sum_weight;
@@ -151,7 +217,7 @@ static int QuantizeColorToImplicitPaletteIndex(
     int multiplier = 1;
     for (size_t c = 0; c < color.size(); c++) {
       int value = color[c];
-      value -= ((1 << bit_depth) - 1) / 12;
+      value -= 1 << (std::max(0, bit_depth - 3));
       value = std::max(0, value);
       int quantized = ((kLargeCube - 1) * value + (1 << (bit_depth - 1))) /
                       ((1 << bit_depth) - 1);
@@ -203,7 +269,7 @@ static Status InvPalette(Image &input, uint32_t begin_c, uint32_t nb_colors,
             const size_t y = task;
             pixel_type *p = input.channel[c0].Row(y);
             for (size_t x = 0; x < w; x++) {
-              const int index = p[x];
+              const int index = Clamp1(p[x], 0, (pixel_type) palette.w-1);
               p[x] = palette_internal::GetPaletteValue(
                   p_palette, index, /*c=*/0,
                   /*palette_size=*/palette.w,
@@ -341,6 +407,13 @@ static Status CheckPaletteParams(const Image &image, uint32_t begin_c,
   // The range is including c1 and c2, so c2 may not be num_channels.
   if (c1 > image.channel.size() || c2 >= image.channel.size() || c2 < c1) {
     return JXL_FAILURE("Invalid channel range");
+  }
+  for (size_t c = begin_c + 1; c <= end_c; c++) {
+    if (image.channel[c].w != image.channel[begin_c].w ||
+        image.channel[c].h != image.channel[begin_c].h) {
+      return JXL_FAILURE("Palette input channels [%" PRIu32 " to %" PRIu32
+                         "] must have the same size", begin_c, end_c);
+    }
   }
 
   return true;
@@ -533,17 +606,18 @@ static Status FwdPalette(Image &input, uint32_t begin_c, uint32_t end_c,
             const float color_distance =
                 32 * palette_internal::ColorDistance(color_with_error,
                                                      quantized_val);
-            pixel_type_w index_penalty = 0;
+            float index_penalty = 0;
             if (index == -1) {
-              index_penalty = -128;
+              index_penalty = -124;
             } else if (index < static_cast<int>(nb_colors)) {
               index_penalty = 2 * std::abs(index);
             } else if (index < static_cast<int>(nb_colors) +
                                    palette_internal::kLargeCubeOffset) {
-              index_penalty = 96;
+              index_penalty = 70;
             } else {
               index_penalty = 256;
             }
+            index_penalty *= 1LL << std::max(2 * (bit_depth - 8), 0);
             const float distance = color_distance + index_penalty;
             if (distance < best_distance) {
               best_distance = distance;
@@ -577,20 +651,20 @@ static Status FwdPalette(Image &input, uint32_t begin_c, uint32_t end_c,
           }
           len_error = sqrt(len_error);
           float modulate = 1.0;
-          if (len_error > 38) {
-            modulate *= 38 / len_error;
+          int len_limit = 38 << std::max(0, bit_depth - 8);
+          if (len_error > len_limit) {
+            modulate *= len_limit / len_error;
           }
           for (size_t c = 0; c < nb; ++c) {
             float local_error = (color_with_error[c] - best_val[c]);
-            float total_error = 0.65f * local_error;
-            total_error *= modulate;
+            float total_error = 0.65 * local_error;
 
             // If the neighboring pixels have some error in the opposite
             // direction of total_error, cancel some or all of it out before
             // spreading among them.
             constexpr int offsets[12][2] = { {1, 2}, {0, 3}, {0, 4}, {1, 1},
                                              {1, 3}, {2, 2}, {1, 0}, {1, 4},
-                                             {2, 1}, {2, 3}, {2, 0}, {2, 2} };
+                                             {2, 1}, {2, 3}, {2, 0}, {2, 4} };
             float total_available = 0;
             int n = 0;
             for (int i = 0; i < 11; ++i) {
@@ -613,10 +687,11 @@ static Status FwdPalette(Image &input, uint32_t begin_c, uint32_t end_c,
                 error_row[row][c][x + col] *= (1 - weight);
               }
             }
-            const float remaining_error = (1.0f / 14) * total_error;
+            total_error *= modulate;
+            const float remaining_error = (1.0f / 14.) * total_error;
             error_row[0][c][x + 3] += 2 * remaining_error;
-            error_row[1][c][x + 1] += remaining_error;
             error_row[0][c][x + 4] += remaining_error;
+            error_row[1][c][x + 0] += remaining_error;
             for (int i = 0; i < 5; ++i) {
               error_row[1][c][x + i] += remaining_error;
               error_row[2][c][x + i] += remaining_error;

@@ -28,14 +28,20 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 
 add_library(image_loading STATIC
+  ../viewer/load_jxl.cc
+  ../viewer/load_jxl.h
   image_loading.cc
   image_loading.h
+)
+target_include_directories(image_loading PRIVATE
+  $<TARGET_PROPERTY:lcms2,INCLUDE_DIRECTORIES>
 )
 target_link_libraries(image_loading PUBLIC
   Qt5::Widgets
   jxl-static
   jxl_threads-static
   jxl_extras-static
+  lcms2
 )
 
 add_executable(compare_codecs WIN32

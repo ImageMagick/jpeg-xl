@@ -31,22 +31,22 @@ namespace {
 // (gamma-compressed) grayscale background color, alpha image represents
 // weights of the sRGB colors in the [0 .. (1 << bit_depth) - 1] interval,
 // output image is in linear space.
-void AlphaBlend(const Image3F& in, const size_t c, float background_linear255,
-                const ImageU& alpha, const uint16_t opaque, Image3F* out) {
-  const float background = LinearToSrgb8Direct(background_linear255);
+void AlphaBlend(const Image3F& in, const size_t c, float background_linear,
+                const ImageF& alpha, Image3F* out) {
+  const float background = LinearToSrgb8Direct(background_linear);
 
   for (size_t y = 0; y < out->ysize(); ++y) {
-    const uint16_t* JXL_RESTRICT row_a = alpha.ConstRow(y);
+    const float* JXL_RESTRICT row_a = alpha.ConstRow(y);
     const float* JXL_RESTRICT row_i = in.ConstPlaneRow(c, y);
     float* JXL_RESTRICT row_o = out->PlaneRow(c, y);
     for (size_t x = 0; x < out->xsize(); ++x) {
-      const uint16_t a = row_a[x];
-      if (a == 0) {
-        row_o[x] = background_linear255;
-      } else if (a == opaque) {
+      const float a = row_a[x];
+      if (a <= 0.f) {
+        row_o[x] = background_linear;
+      } else if (a >= 1.f) {
         row_o[x] = row_i[x];
       } else {
-        const float w_fg = a * 1.0f / opaque;
+        const float w_fg = a;
         const float w_bg = 1.0f - w_fg;
         const float fg = w_fg * LinearToSrgb8Direct(row_i[x]);
         const float bg = w_bg * background;
@@ -57,27 +57,24 @@ void AlphaBlend(const Image3F& in, const size_t c, float background_linear255,
 }
 
 const Image3F* AlphaBlend(const ImageBundle& ib, const Image3F& linear,
-                          float background_linear255, Image3F* copy) {
+                          float background_linear, Image3F* copy) {
   // No alpha => all opaque.
   if (!ib.HasAlpha()) return &linear;
 
   *copy = Image3F(linear.xsize(), linear.ysize());
-  const uint16_t opaque = (1U << ib.metadata()->GetAlphaBits()) - 1;
   for (size_t c = 0; c < 3; ++c) {
-    AlphaBlend(linear, c, background_linear255, ib.alpha(), opaque, copy);
+    AlphaBlend(linear, c, background_linear, ib.alpha(), copy);
   }
   return copy;
 }
 
-void AlphaBlend(float background_linear255, ImageBundle* io_linear_srgb) {
+void AlphaBlend(float background_linear, ImageBundle* io_linear_srgb) {
   // No alpha => all opaque.
   if (!io_linear_srgb->HasAlpha()) return;
 
-  const uint16_t opaque =
-      (1U << io_linear_srgb->metadata()->GetAlphaBits()) - 1;
   for (size_t c = 0; c < 3; ++c) {
-    AlphaBlend(*io_linear_srgb->color(), c, background_linear255,
-               *io_linear_srgb->alpha(), opaque, io_linear_srgb->color());
+    AlphaBlend(*io_linear_srgb->color(), c, background_linear,
+               *io_linear_srgb->alpha(), io_linear_srgb->color());
   }
 }
 
@@ -106,7 +103,6 @@ float ComputeScore(const ImageBundle& rgb0, const ImageBundle& rgb1,
   JXL_CHECK(TransformIfNeeded(rgb1, ColorEncoding::LinearSRGB(rgb1.IsGray()),
                               pool, &store1, &linear_srgb1));
 
-  return ComputeScoreImpl(*linear_srgb0, *linear_srgb1, comparator, diffmap);
   // No alpha: skip blending, only need a single call to Butteraugli.
   if (!rgb0.HasAlpha() && !rgb1.HasAlpha()) {
     return ComputeScoreImpl(*linear_srgb0, *linear_srgb1, comparator, diffmap);
@@ -115,24 +111,15 @@ float ComputeScore(const ImageBundle& rgb0, const ImageBundle& rgb1,
   // Blend on black and white backgrounds
 
   const float black = 0.0f;
-  ImageBundle blended_black0(&metadata0);
-  blended_black0.SetFromImage(CopyImage(linear_srgb0->color()),
-                              linear_srgb0->c_current());
-  ImageBundle blended_black1(&metadata1);
-  blended_black1.SetFromImage(CopyImage(linear_srgb1->color()),
-                              linear_srgb1->c_current());
+  ImageBundle blended_black0 = linear_srgb0->Copy();
+  ImageBundle blended_black1 = linear_srgb1->Copy();
   AlphaBlend(black, &blended_black0);
   AlphaBlend(black, &blended_black1);
 
-  // TODO(lode): this is incorrect in case of intensity multiplier, consider
-  // making intensity multiplier part of comparator
-  const float white = 255.0f;
-  ImageBundle blended_white0(&metadata0);
-  blended_white0.SetFromImage(CopyImage(linear_srgb0->color()),
-                              linear_srgb0->c_current());
-  ImageBundle blended_white1(&metadata1);
-  blended_white1.SetFromImage(CopyImage(linear_srgb1->color()),
-                              linear_srgb1->c_current());
+  const float white = 1.0f;
+  ImageBundle blended_white0 = linear_srgb0->Copy();
+  ImageBundle blended_white1 = linear_srgb1->Copy();
+
   AlphaBlend(white, &blended_white0);
   AlphaBlend(white, &blended_white1);
 

@@ -43,10 +43,21 @@ add_library(lcms2 STATIC
 )
 target_include_directories(lcms2
     PUBLIC "${CMAKE_CURRENT_LIST_DIR}/lcms/include")
+# This warning triggers with gcc-8.
+if (${CMAKE_C_COMPILER_ID} MATCHES "GNU")
+target_compile_options(lcms2
+  PRIVATE
+    # gcc-only flags.
+    -Wno-stringop-truncation
+    -Wno-strict-aliasing
+)
+endif()
 # By default LCMS uses sizeof(void*) for memory alignment, but in arm 32-bits we
 # can't access doubles not aligned to 8 bytes. This forces the alignment to 8
 # bytes.
 target_compile_definitions(lcms2
   PRIVATE "-DCMS_PTR_ALIGNMENT=8")
+target_compile_definitions(lcms2
+  PUBLIC "-DCMS_NO_REGISTER_KEYWORD=1")
 
 set_property(TARGET lcms2 PROPERTY POSITION_INDEPENDENT_CODE ON)

@@ -44,12 +44,12 @@ bool Abort() {
   __sanitizer_print_stack_trace();
 #endif  // defined(*_SANITIZER)
 
-#if HWY_COMPILER_MSVC
+#if JXL_COMPILER_MSVC
   __debugbreak();
+  abort();
 #else
   __builtin_trap();
 #endif
-  abort();
 }
 
 }  // namespace jxl

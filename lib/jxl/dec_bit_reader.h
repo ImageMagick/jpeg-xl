@@ -42,7 +42,12 @@ class BitReader {
   static constexpr size_t kMaxBitsPerCall = 56;
 
   // Constructs an invalid BitReader, to be overwritten before usage.
-  BitReader() : first_byte_(nullptr) {}
+  BitReader()
+      : buf_(0),
+        bits_in_buf_(0),
+        next_byte_{nullptr},
+        end_minus_8_{nullptr},
+        first_byte_(nullptr) {}
   BitReader(const BitReader&) = delete;
 
   // bytes need not be aligned nor padded!
@@ -124,7 +129,7 @@ class BitReader {
     // callers reside between begin/end_target, especially because only the
     // callers in dec_ans are time-critical. Therefore only enabled if the
     // entire binary is compiled for (and thus requires) BMI2.
-#ifdef __BMI2__
+#if defined(__BMI2__) && defined(__x86_64__)
     return _bzhi_u64(buf_, nbits);
 #else
     const uint64_t mask = (1ULL << nbits) - 1;

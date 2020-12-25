@@ -348,27 +348,19 @@ Status DecodeImagePNM(const Span<const uint8_t> bytes, ThreadPool* pool,
   }
   io->metadata.m.SetAlphaBits(0);
   io->dec_pixels = header.xsize * header.ysize;
-  io->frames.clear();
-  io->frames.reserve(1);
-  ImageBundle ib(&io->metadata.m);
 
   const bool flipped_y = header.bits_per_sample == 32;  // PFMs are flipped
   const Span<const uint8_t> span(pos, bytes.data() + bytes.size() - pos);
   JXL_RETURN_IF_ERROR(ConvertImage(
       span, header.xsize, header.ysize, io->metadata.m.color_encoding,
       /*has_alpha=*/false, /*alpha_is_premultiplied=*/false,
-      io->metadata.m.GetAlphaBits(), io->metadata.m.bit_depth.bits_per_sample,
-      header.big_endian, flipped_y, pool, &ib));
+      io->metadata.m.bit_depth.bits_per_sample,
+      header.big_endian ? JXL_BIG_ENDIAN : JXL_LITTLE_ENDIAN, flipped_y, pool,
+      &io->Main()));
   if (!header.floating_point) {
-    io->metadata.m.bit_depth.bits_per_sample = ib.DetectRealBitdepth();
+    io->metadata.m.bit_depth.bits_per_sample = io->Main().DetectRealBitdepth();
   }
-  if (header.floating_point && io->dec_target != DecodeTarget::kLosslessFloat) {
-    // pfm uses nominal range 0..1 while internally JPEG XL uses 0..255. pfm
-    // has a "scale" value in the header but it appears software only uses its
-    // sign, so its value is ignored in this scaling.
-    ScaleImage<float>(255, ib.color());
-  }
-  io->frames.push_back(std::move(ib));
+  io->SetSize(header.xsize, header.ysize);
   SetIntensityTarget(io);
   return true;
 }
@@ -378,7 +370,8 @@ Status EncodeImagePNM(const CodecInOut* io, const ColorEncoding& c_desired,
                       PaddedBytes* bytes) {
   const bool floating_point = bits_per_sample > 16;
   // Choose native for PFM; PGM/PPM require big-endian (N/A for PBM)
-  const bool little_endian = floating_point ? IsLittleEndian() : false;
+  const JxlEndianness endianness =
+      floating_point ? JXL_NATIVE_ENDIAN : JXL_BIG_ENDIAN;
 
   ImageMetadata metadata_copy = io->metadata.m;
   // AllDefault sets all_default, which can cause a race condition.
@@ -411,13 +404,12 @@ Status EncodeImagePNM(const CodecInOut* io, const ColorEncoding& c_desired,
   PaddedBytes pixels(stride * ib.ysize());
   JXL_RETURN_IF_ERROR(ConvertImage(
       *transformed, bits_per_sample, floating_point,
-      to_color_transform->c_current().SameColorEncoding(c_desired),
-      /*apply_srgb_tf=*/false, c_desired.Channels(), little_endian, stride,
-      pool, pixels.data(), pixels.size(), jxl::Orientation::kIdentity));
+      /*apply_srgb_tf=*/false, c_desired.Channels(), endianness, stride, pool,
+      pixels.data(), pixels.size(), jxl::Orientation::kIdentity));
 
   char header[kMaxHeaderSize];
   int header_size = 0;
-  JXL_RETURN_IF_ERROR(EncodeHeader(*transformed, bits_per_sample, little_endian,
+  JXL_RETURN_IF_ERROR(EncodeHeader(*transformed, bits_per_sample, endianness,
                                    header, &header_size));
 
   bytes->resize(static_cast<size_t>(header_size) + pixels.size());

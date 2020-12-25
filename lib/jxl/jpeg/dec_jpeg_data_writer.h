@@ -12,28 +12,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef LIB_JXL_BASE_FAST_LOG_H_
-#define LIB_JXL_BASE_FAST_LOG_H_
+// Functions for writing a JPEGData object into a jpeg byte stream.
 
+#ifndef LIB_JXL_JPEG_DEC_JPEG_DATA_WRITER_H_
+#define LIB_JXL_JPEG_DEC_JPEG_DATA_WRITER_H_
+
+#include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 
-#include <cmath>
+#include <functional>
+
+#include "lib/jxl/jpeg/jpeg_data.h"
 
 namespace jxl {
+namespace jpeg {
 
-// L1 error ~9.1E-3 (see fast_log_test).
-static inline float FastLog2f(float f) {
-  int32_t f_bits;
-  memcpy(&f_bits, &f, 4);
-  int exp = ((f_bits >> 23) & 0xFF) - 126;
-  uint32_t fr_bits = (f_bits & 0x807fffff) | 0x3f000000;
-  float fr;
-  memcpy(&fr, &fr_bits, 4);
-  // TODO(veluca): improve constants.
-  return exp + (-1.34752046f * fr + 3.98979143f) * fr - 2.64898502f;
-}
+// Function type used to write len bytes into buf. Returns the number of bytes
+// written.
+using JPEGOutput = std::function<size_t(const uint8_t* buf, size_t len)>;
 
+Status WriteJpeg(const JPEGData& jpg, const JPEGOutput& out);
+
+}  // namespace jpeg
 }  // namespace jxl
 
-#endif  // LIB_JXL_BASE_FAST_LOG_H_
+#endif  // LIB_JXL_JPEG_DEC_JPEG_DATA_WRITER_H_
