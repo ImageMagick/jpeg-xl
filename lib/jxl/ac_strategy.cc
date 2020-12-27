@@ -33,8 +33,9 @@ namespace {
 // square block frequency along the (i + j == const) diagonals is roughly the
 // same. For historical reasons, consecutive diagonals are traversed
 // in alternating directions - so called "zig-zag" (or "snake") order.
-AcStrategy::CoeffOrderAndLut ComputeNaturalCoeffOrder() {
-  AcStrategy::CoeffOrderAndLut coeff;
+AcStrategy::CoeffOrderAndLut* ComputeNaturalCoeffOrder() {
+  AcStrategy::CoeffOrderAndLut *coeff;
+  coeff = (AcStrategy::CoeffOrderAndLut *) malloc(sizeof(*coeff));
   // TODO(veluca): avoid the sorting here. This is significantly slow with large
   // transforms.
   for (size_t s = 0; s < AcStrategy::kNumValidStrategies; s++) {
@@ -45,9 +46,9 @@ AcStrategy::CoeffOrderAndLut ComputeNaturalCoeffOrder() {
     JXL_ASSERT((AcStrategy::CoeffOrderAndLut::kOffset[s + 1] -
                 AcStrategy::CoeffOrderAndLut::kOffset[s]) == cx * cy);
     coeff_order_t* JXL_RESTRICT order_start =
-        coeff.order + AcStrategy::CoeffOrderAndLut::kOffset[s] * kDCTBlockSize;
+        coeff->order + AcStrategy::CoeffOrderAndLut::kOffset[s] * kDCTBlockSize;
     coeff_order_t* JXL_RESTRICT lut_start =
-        coeff.lut + AcStrategy::CoeffOrderAndLut::kOffset[s] * kDCTBlockSize;
+        coeff->lut + AcStrategy::CoeffOrderAndLut::kOffset[s] * kDCTBlockSize;
 
     // CoefficientLayout ensures cx >= cy.
     // We compute the zigzag order for a cx x cx block, then discard all the
@@ -95,8 +96,10 @@ AcStrategy::CoeffOrderAndLut ComputeNaturalCoeffOrder() {
 }  // namespace
 
 const AcStrategy::CoeffOrderAndLut* AcStrategy::CoeffOrder() {
-  static AcStrategy::CoeffOrderAndLut order = ComputeNaturalCoeffOrder();
-  return &order;
+  static AcStrategy::CoeffOrderAndLut *order = 0;
+  if (!order)
+    order = ComputeNaturalCoeffOrder();
+  return order;
 }
 
 // These definitions are needed before C++17.
