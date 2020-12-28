@@ -98,7 +98,7 @@ bool Debug(const char* format, ...);
 // defined at compile time by JXL_DEBUG_V_LEVEL is greater or equal than the
 // passed level.
 #define JXL_DEBUG_V(level, format, ...) \
-  JXL_DEBUG(level <= JXL_DEBUG_V_LEVEL, format, __VA_ARGS__)
+  JXL_DEBUG(level <= JXL_DEBUG_V_LEVEL, format, ##__VA_ARGS__)
 
 // Warnings (via JXL_WARNING) are enabled by default in debug builds (opt and
 // debug).
@@ -112,7 +112,8 @@ bool Debug(const char* format, ...);
 #define JXL_DEBUG_WARNING 1
 #endif  // NDEBUG
 #endif  // JXL_DEBUG_WARNING
-#define JXL_WARNING(format, ...) JXL_DEBUG(JXL_DEBUG_WARNING, format, __VA_ARGS__)
+#define JXL_WARNING(format, ...) \
+  JXL_DEBUG(JXL_DEBUG_WARNING, format, ##__VA_ARGS__)
 
 // Exits the program after printing a stack trace when possible.
 JXL_NORETURN bool Abort();

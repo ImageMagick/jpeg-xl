@@ -31,7 +31,8 @@
 #define JXL_DEBUG_JPEG_DATA_READER JXL_DEBUG_ON_ERROR
 #endif  // JXL_DEBUG_JPEG_DATA_READER
 
-#define JXL_JPEG_DEBUG(format, ...) JXL_DEBUG(JXL_DEBUG_JPEG_DATA_READER, format, __VA_ARGS__)
+#define JXL_JPEG_DEBUG(format, ...) \
+  JXL_DEBUG(JXL_DEBUG_JPEG_DATA_READER, format, ##__VA_ARGS__)
 
 namespace jxl {
 namespace jpeg {
