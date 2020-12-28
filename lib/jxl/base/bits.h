@@ -20,7 +20,7 @@
 #include "lib/jxl/base/compiler_specific.h"
 #include "lib/jxl/base/status.h"
 
-#ifdef _MSC_VER
+#if JXL_COMPILER_MSVC
 #include <intrin.h>
 #endif
 
@@ -52,8 +52,10 @@ static JXL_INLINE JXL_MAYBE_UNUSED size_t PopCount(SizeTag<8> /* tag */,
                                                    const uint64_t x) {
 #if JXL_COMPILER_CLANG || JXL_COMPILER_GCC
   return static_cast<size_t>(__builtin_popcountll(x));
-#elif JXL_COMPILER_MSVC
+#elif JXL_COMPILER_MSVC && _WIN64
   return _mm_popcnt_u64(x);
+#elif JXL_COMPILER_MSVC
+  return _mm_popcnt_u32(uint32_t(x)) + _mm_popcnt_u32(uint32_t(x>>32));
 #else
 #error "not supported"
 #endif
@@ -68,7 +70,7 @@ static JXL_INLINE JXL_MAYBE_UNUSED size_t PopCount(T x) {
 static JXL_INLINE JXL_MAYBE_UNUSED size_t
 Num0BitsAboveMS1Bit_Nonzero(SizeTag<4> /* tag */, const uint32_t x) {
   JXL_DASSERT(x != 0);
-#ifdef _MSC_VER
+#if JXL_COMPILER_MSVC
   unsigned long index;
   _BitScanReverse(&index, x);
   return 31 - index;
@@ -77,12 +79,20 @@ Num0BitsAboveMS1Bit_Nonzero(SizeTag<4> /* tag */, const uint32_t x) {
 #endif
 }
 static JXL_INLINE JXL_MAYBE_UNUSED size_t
-Num0BitsAboveMS1Bit_Nonzero(SizeTag<8> /* tag */, const uint64_t x) {
+Num0BitsAboveMS1Bit_Nonzero(SizeTag<8> /* tag */, uint64_t x) {
   JXL_DASSERT(x != 0);
-#ifdef _MSC_VER
+#if JXL_COMPILER_MSVC && _WIN64
   unsigned long index;
   _BitScanReverse64(&index, x);
   return 63 - index;
+#elif JXL_COMPILER_MSVC
+  x |= (x >> 1);
+  x |= (x >> 2);
+  x |= (x >> 4);
+  x |= (x >> 8);
+  x |= (x >> 16);
+  x |= (x >> 32);
+  return (64 - PopCount(x));
 #else
   return static_cast<size_t>(__builtin_clzll(x));
 #endif
@@ -98,7 +108,7 @@ Num0BitsAboveMS1Bit_Nonzero(const T x) {
 static JXL_INLINE JXL_MAYBE_UNUSED size_t
 Num0BitsBelowLS1Bit_Nonzero(SizeTag<4> /* tag */, const uint32_t x) {
   JXL_DASSERT(x != 0);
-#ifdef _MSC_VER
+#if JXL_COMPILER_MSVC
   unsigned long index;
   _BitScanForward(&index, x);
   return index;
@@ -109,10 +119,12 @@ Num0BitsBelowLS1Bit_Nonzero(SizeTag<4> /* tag */, const uint32_t x) {
 static JXL_INLINE JXL_MAYBE_UNUSED size_t
 Num0BitsBelowLS1Bit_Nonzero(SizeTag<8> /* tag */, const uint64_t x) {
   JXL_DASSERT(x != 0);
-#ifdef _MSC_VER
+#if JXL_COMPILER_MSVC && _WIN64
   unsigned long index;
   _BitScanForward64(&index, x);
   return index;
+#elif JXL_COMPILER_MSVC
+  return PopCount((x & -(int64_t)x) - 1);
 #else
   return static_cast<size_t>(__builtin_ctzll(x));
 #endif
