@@ -129,7 +129,7 @@ endif()  #!MSVC
 include(jxl.cmake)
 
 # Other libraries outside the core jxl library.
-include(jxl_extras.cmake)
+#include(jxl_extras.cmake)
 include(jxl_threads.cmake)
 
 # Install all the library headers from the source and the generated ones. There
