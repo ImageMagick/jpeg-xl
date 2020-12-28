@@ -96,9 +96,7 @@ AcStrategy::CoeffOrderAndLut* ComputeNaturalCoeffOrder() {
 }  // namespace
 
 const AcStrategy::CoeffOrderAndLut* AcStrategy::CoeffOrder() {
-  static AcStrategy::CoeffOrderAndLut *order = 0;
-  if (!order)
-    order = ComputeNaturalCoeffOrder();
+  static AcStrategy::CoeffOrderAndLut *order = ComputeNaturalCoeffOrder();
   return order;
 }
 
