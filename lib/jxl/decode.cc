@@ -161,7 +161,7 @@ enum class DecoderStage : uint32_t {
 };
 
 struct JxlDecoderStruct {
-  JxlDecoderStruct() {}
+  JxlDecoderStruct() = default;
 
   JxlMemoryManager memory_manager;
   std::unique_ptr<jxl::ThreadPool> thread_pool;
@@ -290,6 +290,9 @@ struct JxlDecoderStruct {
 
   // Statistics which CodecInOut can keep
   uint64_t dec_pixels;
+
+  const uint8_t* next_in;
+  size_t avail_in;
 };
 
 // TODO(zond): Make this depend on the data loaded into the decoder.
@@ -335,6 +338,8 @@ void JxlDecoderReset(JxlDecoder* dec) {
   dec->dc_out_size = 0;
   dec->image_out_size = 0;
   dec->dec_pixels = 0;
+  dec->next_in = 0;
+  dec->avail_in = 0;
 
   dec->passes_state.reset(nullptr);
 
@@ -553,12 +558,13 @@ static JxlDecoderStatus ConvertImage(const JxlDecoder* dec,
 
   bool apply_srgb_tf = false;
   if (metadata.xyb_encoded) {
-    if (!frame.c_current().IsLinearSRGB()) {
+    if (!frame.c_current().IsLinearSRGB() && !frame.c_current().IsSRGB()) {
       return JXL_API_ERROR(
           "Error, the implementation expects that ImageBundle is in linear "
-          "sRGB when the image was xyb_encoded");
+          "or nonlinear sRGB when the image was xyb_encoded");
     }
-    if (format.data_type != JXL_TYPE_FLOAT) {
+    if (format.data_type != JXL_TYPE_FLOAT &&
+        frame.c_current().IsLinearSRGB()) {
       // Convert to nonlinear sRGB for integer pixels.
       apply_srgb_tf = true;
     }
@@ -684,7 +690,8 @@ jxl::Status DecodeDC(JxlDecoder* dec, const uint8_t* in, size_t size) {
   jxl::FrameDimensions frame_dim = frame_header.ToFrameDimensions();
 
   PassesDecoderState dec_state;
-  ModularFrameDecoder modular_frame_decoder(frame_dim);
+  ModularFrameDecoder modular_frame_decoder;
+  modular_frame_decoder.Init(frame_dim);
   ThreadPool* pool = nullptr;
   std::vector<AuxOut>* aux_outs = nullptr;
   AuxOut* JXL_RESTRICT aux_out = nullptr;
@@ -717,13 +724,12 @@ jxl::Status DecodeDC(JxlDecoder* dec, const uint8_t* in, size_t size) {
     JXL_RETURN_IF_ERROR(shared.matrices.DecodeDC(reader.get()));
     if (frame_header.encoding == FrameEncoding::kVarDCT) {
       JXL_RETURN_IF_ERROR(jxl::DecodeGlobalDCInfo(
-          /*downsampling=*/0, reader.get(), /*is_jpeg=*/false, &dec_state,
-          dec->thread_pool.get()));
+          reader.get(), /*is_jpeg=*/false, &dec_state, dec->thread_pool.get()));
     } else if (frame_header.encoding == FrameEncoding::kModular) {
       dec_state.Init(dec->thread_pool.get());
     }
-    JXL_RETURN_IF_ERROR(modular_frame_decoder.DecodeGlobalInfo(
-        reader.get(), frame_header, frame_dim));
+    JXL_RETURN_IF_ERROR(
+        modular_frame_decoder.DecodeGlobalInfo(reader.get(), frame_header));
   }
 
   // span and reader begin at groups start, so group_codes_begin can be 0.
@@ -756,6 +762,7 @@ jxl::Status DecodeDC(JxlDecoder* dec, const uint8_t* in, size_t size) {
   return true;
 }
 
+// TODO(eustas): no CodecInOut -> no image size reinforcement -> possible OOM.
 JxlDecoderStatus JxlDecoderProcessInternal(JxlDecoder* dec, const uint8_t* in,
                                            size_t size) {
   // If no parallel runner is set, use the default
@@ -822,7 +829,7 @@ JxlDecoderStatus JxlDecoderProcessInternal(JxlDecoder* dec, const uint8_t* in,
       jxl::ImageBundle ib(&dec->metadata.m);
       if (!DecodePreview(dparams, dec->metadata, reader.get(),
                          /*aux_out=*/nullptr, dec->thread_pool.get(), &ib,
-                         &dec->dec_pixels)) {
+                         &dec->dec_pixels, /*constraints=*/nullptr)) {
         return JXL_API_ERROR("decoding preview failed");
       }
 
@@ -997,7 +1004,7 @@ JxlDecoderStatus JxlDecoderProcessInternal(JxlDecoder* dec, const uint8_t* in,
           if (!DecodeFrame(dparams, dec->passes_state.get(),
                            dec->thread_pool.get(), reader.get(),
                            /*aux_out=*/nullptr, dec->ib.get(), dec->metadata,
-                           nullptr)) {
+                           /*constraints=*/nullptr)) {
             return JXL_API_ERROR("decoding frame failed");
           }
           if (frame_header.is_last) {
@@ -1070,9 +1077,25 @@ JxlDecoderStatus JxlDecoderProcessInternal(JxlDecoder* dec, const uint8_t* in,
 }  // namespace
 }  // namespace jxl
 
-JxlDecoderStatus JxlDecoderProcessInput(JxlDecoder* dec,
-                                        const uint8_t** next_in,
-                                        size_t* avail_in) {
+JxlDecoderStatus JxlDecoderSetInput(JxlDecoder* dec, const uint8_t* data,
+                                    size_t size) {
+  if (dec->next_in) return JXL_DEC_ERROR;
+
+  dec->next_in = data;
+  dec->avail_in = size;
+  return JXL_DEC_SUCCESS;
+}
+
+size_t JxlDecoderReleaseInput(JxlDecoder* dec) {
+  size_t result = dec->avail_in;
+  dec->next_in = nullptr;
+  dec->avail_in = 0;
+  return result;
+}
+
+JxlDecoderStatus JxlDecoderProcessInput(JxlDecoder* dec) {
+  const uint8_t** next_in = &dec->next_in;
+  size_t* avail_in = &dec->avail_in;
   if (dec->stage == DecoderStage::kInited) {
     dec->stage = DecoderStage::kStarted;
   }
@@ -1473,7 +1496,8 @@ JxlDecoderStatus GetColorEncodingForTarget(
     if (!format) {
       return JXL_API_ERROR("Must provide pixel format for data color profile");
     }
-    if (format->data_type == JXL_TYPE_FLOAT) {
+    if (format->data_type == JXL_TYPE_FLOAT &&
+        !dec->metadata.m.color_encoding.IsSRGB()) {
       *encoding = &jxl::ColorEncoding::LinearSRGB(grayscale);
     } else {
       *encoding = &jxl::ColorEncoding::SRGB(grayscale);

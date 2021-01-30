@@ -143,8 +143,9 @@ JXL_NORETURN bool Abort();
 // defined). This is useful for slower asserts that we want to run more rarely
 // than usual. These will run on asan, msan and other debug builds, but not in
 // opt or release.
-#if !defined(NDEBUG) || defined(ADDRESS_SANITIZER) || \
-    defined(MEMORY_SANITIZER) || defined(THREAD_SANITIZER)
+#if !defined(NDEBUG) || defined(ADDRESS_SANITIZER) ||         \
+    defined(MEMORY_SANITIZER) || defined(THREAD_SANITIZER) || \
+    defined(__clang_analyzer__)
 #define JXL_DASSERT(condition)                        \
   do {                                                \
     if (!(condition)) {                               \

@@ -171,12 +171,13 @@ void SetModularQualityForBitrate(jxl::ThreadPoolInternal* pool,
     }
     float t =
         (target_size - best_below_size) / (best_above_size - best_below_size);
-    if (best_above > 100.f && ratio < 1.f)
+    if (best_above > 100.f && ratio < 1.f) {
       quality = (quality + 105) / 2;
-    else if (best_above - best_below > 1000 && ratio > 1.f)
+    } else if (best_above - best_below > 1000 && ratio > 1.f) {
       quality -= 1000;
-    else
+    } else {
       quality = best_above * t + best_below * (1.f - t);
+    }
     if (quality >= 100.f) quality = 100.f;
   }
   args->params.quality_pair = std::make_pair(best_quality, best_quality);
@@ -557,7 +558,7 @@ jxl::Status CompressArgs::ValidateArgs(const CommandLineParser& cmdline) {
     if (quality < 100) jpeg_transcode = false;
     // Quality settings roughly match libjpeg qualities.
     if (quality < 7 || quality == 100) {
-      params.modular_mode = true;
+      if (jpeg_transcode == false) params.modular_mode = true;
       // Internal modular quality to roughly match VarDCT size.
       params.quality_pair.first = params.quality_pair.second =
           std::min(35 + (quality - 7) * 3.0f, 100.0f);
@@ -590,9 +591,10 @@ jxl::Status CompressArgs::ValidateArgs(const CommandLineParser& cmdline) {
               butteraugli_max_dist);
       return false;
     }
+    if (params.butteraugli_distance > 0) jpeg_transcode = false;
     if (params.butteraugli_distance == 0) {
       // Use modular for lossless.
-      params.modular_mode = true;
+      if (jpeg_transcode == false) params.modular_mode = true;
     } else if (params.butteraugli_distance < butteraugli_min_dist) {
       params.butteraugli_distance = butteraugli_min_dist;
     }

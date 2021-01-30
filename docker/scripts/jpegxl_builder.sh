@@ -54,6 +54,16 @@ WEBP_RELEASE="1.0.2"
 WEBP_URL="https://codeload.github.com/webmproject/libwebp/tar.gz/v${WEBP_RELEASE}"
 WEBP_SHA256="347cf85ddc3497832b5fa9eee62164a37b249c83adae0ba583093e039bf4881f"
 
+# Google benchmark
+BENCHMARK_RELEASE="1.5.2"
+BENCHMARK_URL="https://github.com/google/benchmark/archive/v${BENCHMARK_RELEASE}.tar.gz"
+BENCHMARK_SHA256="dccbdab796baa1043f04982147e67bb6e118fe610da2c65f88912d73987e700c"
+BENCHMARK_FLAGS="-DGOOGLETEST_PATH=${MYDIR}/../../third_party/googletest"
+# attribute(format(__MINGW_PRINTF_FORMAT, ...)) doesn't work in our
+# environment, so we disable the warning.
+BENCHMARK_FLAGS="-DCMAKE_BUILD_TYPE=Release -DBENCHMARK_ENABLE_TESTING=OFF \
+  -DCMAKE_CXX_FLAGS=-Wno-ignored-attributes"
+
 # V8
 V8_VERSION="8.7.230"
 
@@ -319,6 +329,11 @@ install_from_source() {
       # When compiling with clang, CMake doesn't detect that we are using mingw.
       cmake_args+=(
         -DMINGW=1
+        # Googletest needs this when cross-compiling to windows
+        -DCMAKE_CROSSCOMPILING=1
+        -DHAVE_STD_REGEX=0
+        -DHAVE_POSIX_REGEX=0
+        -DHAVE_GNU_POSIX_REGEX=0
       )
       local windres=$(which ${target}-windres || true)
       if [[ -n "${windres}" ]]; then
@@ -441,6 +456,26 @@ main() {
   # which is not available in the llvm repos so it might have a different
   # version than the ubuntu ones.
 
+  # Remove the win32 libgcc version. The gcc-mingw-w64-x86-64 (and i686)
+  # packages install two libgcc versions:
+  #   /usr/lib/gcc/x86_64-w64-mingw32/7.3-posix
+  #   /usr/lib/gcc/x86_64-w64-mingw32/7.3-win32
+  # (exact libgcc version number depends on the package version).
+  #
+  # Clang will pick the best libgcc, sorting by version, but it doesn't
+  # seem to be a way to specify one or the other one, except by passing
+  # -nostdlib and setting all the include paths from the command line.
+  # To check which one is being used you can run:
+  #   clang++-7 --target=x86_64-w64-mingw32 -v -print-libgcc-file-name
+  # We need to use the "posix" versions for thread support, so here we
+  # just remove the other one.
+  local target
+  for target in "${LIST_MINGW_TARGETS[@]}"; do
+    update-alternatives --set "${target}-gcc" $(which "${target}-gcc-posix")
+    local gcc_win32_path=$("${target}-cpp-win32" -print-libgcc-file-name)
+    rm -rf $(dirname "${gcc_win32_path}")
+  done
+
   # TODO: Add msan for the target when cross-compiling. This only installs it
   # for amd64.
   ./msan_install.sh
@@ -462,6 +497,8 @@ main() {
   install_from_source GIFLIB "${LIST_MINGW_TARGETS[@]}" "${LIST_WASM_TARGETS[@]}"
   # webp in Ubuntu is relatively old so we install it from source for everybody.
   install_from_source WEBP "${LIST_TARGETS[@]}" "${LIST_MINGW_TARGETS[@]}"
+
+  install_from_source BENCHMARK "${LIST_TARGETS[@]}" "${LIST_MINGW_TARGETS[@]}"
 
   # Install v8. v8 has better WASM SIMD support than NodeJS 14.
   # First we need the installer to install v8.

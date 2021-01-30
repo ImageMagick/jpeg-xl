@@ -27,17 +27,12 @@
 #include "lib/jxl/image_ops.h"
 
 namespace jxl {
-namespace {
 
 // Tries to generalize zig-zag order to non-square blocks. Surprisingly, in
 // square block frequency along the (i + j == const) diagonals is roughly the
 // same. For historical reasons, consecutive diagonals are traversed
 // in alternating directions - so called "zig-zag" (or "snake") order.
-AcStrategy::CoeffOrderAndLut* ComputeNaturalCoeffOrder() {
-  AcStrategy::CoeffOrderAndLut *coeff;
-  coeff = (AcStrategy::CoeffOrderAndLut *) malloc(sizeof(*coeff));
-  // TODO(veluca): avoid the sorting here. This is significantly slow with large
-  // transforms.
+AcStrategy::CoeffOrderAndLut::CoeffOrderAndLut() {
   for (size_t s = 0; s < AcStrategy::kNumValidStrategies; s++) {
     const AcStrategy acs = AcStrategy::FromRawStrategy(s);
     size_t cx = acs.covered_blocks_x();
@@ -46,9 +41,9 @@ AcStrategy::CoeffOrderAndLut* ComputeNaturalCoeffOrder() {
     JXL_ASSERT((AcStrategy::CoeffOrderAndLut::kOffset[s + 1] -
                 AcStrategy::CoeffOrderAndLut::kOffset[s]) == cx * cy);
     coeff_order_t* JXL_RESTRICT order_start =
-        coeff->order + AcStrategy::CoeffOrderAndLut::kOffset[s] * kDCTBlockSize;
+        order + AcStrategy::CoeffOrderAndLut::kOffset[s] * kDCTBlockSize;
     coeff_order_t* JXL_RESTRICT lut_start =
-        coeff->lut + AcStrategy::CoeffOrderAndLut::kOffset[s] * kDCTBlockSize;
+        lut + AcStrategy::CoeffOrderAndLut::kOffset[s] * kDCTBlockSize;
 
     // CoefficientLayout ensures cx >= cy.
     // We compute the zigzag order for a cx x cx block, then discard all the
@@ -80,7 +75,7 @@ AcStrategy::CoeffOrderAndLut* ComputeNaturalCoeffOrder() {
       size_t i = ip - 1;
       for (size_t j = 0; j <= i; j++) {
         size_t x = cx * kBlockDim - 1 - (i - j);
-        size_t y = cx * kBlockDim - 1 - j;  // flipped?
+        size_t y = cx * kBlockDim - 1 - j;
         if (i % 2) std::swap(x, y);
         if ((y & xsm) != 0) continue;
         y >>= xss;
@@ -90,14 +85,11 @@ AcStrategy::CoeffOrderAndLut* ComputeNaturalCoeffOrder() {
       }
     }
   }
-  return coeff;
 }
 
-}  // namespace
-
 const AcStrategy::CoeffOrderAndLut* AcStrategy::CoeffOrder() {
-  static AcStrategy::CoeffOrderAndLut *order = ComputeNaturalCoeffOrder();
-  return order;
+  static AcStrategy::CoeffOrderAndLut order;
+  return &order;
 }
 
 // These definitions are needed before C++17.

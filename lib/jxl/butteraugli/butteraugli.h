@@ -142,13 +142,6 @@ double ButteraugliFuzzyInverse(double seek);
 #define BUTTERAUGLI_ASSUME_ALIGNED(ptr, align) (ptr)
 #endif  // BUTTERAUGLI_HAS_ASSUME_ALIGNED
 
-struct MaskImage {
-  MaskImage() {}
-  MaskImage(int xs, int ys) : mask_x(xs, ys), mask_yb(xs, ys) {}
-  ImageF mask_x;
-  ImageF mask_yb;
-};
-
 struct PsychoImage {
   ImageF uhf[2];  // XY
   ImageF hf[2];   // XY
@@ -184,7 +177,7 @@ class ButteraugliComparator {
   // we can test the hypothesis that a higher weighing of the X channel would
   // improve results at higher Butteraugli values.
   ButteraugliComparator(const Image3F &rgb0, const ButteraugliParams &params);
-  virtual ~ButteraugliComparator();
+  virtual ~ButteraugliComparator() = default;
 
   // Computes the butteraugli map between the original image given in the
   // constructor and the distorted image give here.
@@ -196,8 +189,7 @@ class ButteraugliComparator {
   // Same as above, but the frequency decomposition was already applied.
   void DiffmapPsychoImage(const PsychoImage &pi1, ImageF &diffmap) const;
 
-  void Mask(MaskImage *BUTTERAUGLI_RESTRICT mask,
-            MaskImage *BUTTERAUGLI_RESTRICT mask_dc) const;
+  void Mask(ImageF *BUTTERAUGLI_RESTRICT mask) const;
 
  private:
   Image3F *Temp() const;

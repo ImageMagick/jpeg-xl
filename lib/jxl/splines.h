@@ -39,6 +39,8 @@ static constexpr float kDesiredRenderingDistance = 1.f;
 
 struct Spline {
   struct Point {
+    Point() : x(0.0f), y(0.0f) {}
+    Point(float x, float y) : x(x), y(y) {}
     float x, y;
     bool operator==(const Point& other) const {
       return std::fabs(x - other.x) < 1e-3f && std::fabs(y - other.y) < 1e-3f;
@@ -66,7 +68,8 @@ class QuantizedSpline {
   void Tokenize(std::vector<Token>* tokens) const;
 
   Status Decode(const std::vector<uint8_t>& context_map,
-                ANSSymbolReader* decoder, BitReader* br);
+                ANSSymbolReader* decoder, BitReader* br,
+                size_t max_control_points, size_t* total_num_control_points);
 
  private:
   std::vector<std::pair<int64_t, int64_t>>

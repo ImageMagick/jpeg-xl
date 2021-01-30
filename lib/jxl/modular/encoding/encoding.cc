@@ -59,7 +59,7 @@ FlatTree FilterTree(const Tree &global_tree,
   bool has_wp = false;
   bool has_non_wp = false;
   constexpr size_t kMaxProp = 256;
-  const auto mark_property = [&] (int32_t p) {
+  const auto mark_property = [&](int32_t p) {
     if (p == kWPProp) {
       has_wp = true;
     } else if (p >= kNumStaticProperties) {
@@ -910,7 +910,8 @@ Status ModularDecode(BitReader *br, Image &image, GroupHeader &header,
   const ANSCode *code = &code_storage;
   const std::vector<uint8_t> *context_map = &context_map_storage;
   if (!header.use_global_tree) {
-    JXL_RETURN_IF_ERROR(DecodeTree(br, &tree_storage));
+    size_t tree_size_limit = 1024 + image.w * image.h * nb_channels;
+    JXL_RETURN_IF_ERROR(DecodeTree(br, &tree_storage, tree_size_limit));
     JXL_RETURN_IF_ERROR(DecodeHistograms(br, (tree_storage.size() + 1) / 2,
                                          &code_storage, &context_map_storage));
   } else {
@@ -954,7 +955,7 @@ Status ModularDecode(BitReader *br, Image &image, GroupHeader &header,
     // Truncated group.
     if (allow_truncated_group && !br->AllReadsWithinBounds()) {
       ZeroFillImage(&channel.plane);
-      return true;
+      return Status(StatusCode::kNotEnoughBytes);
     }
   }
   if (!reader.CheckANSFinalState()) {
@@ -1004,8 +1005,9 @@ Status ModularGenericDecompress(BitReader *br, Image &image,
 #endif
   GroupHeader local_header;
   if (header == nullptr) header = &local_header;
-  JXL_RETURN_IF_ERROR(ModularDecode(br, image, *header, group_id, options, tree,
-                                    code, ctx_map, allow_truncated_group));
+  auto dec_status = ModularDecode(br, image, *header, group_id, options, tree,
+                                  code, ctx_map, allow_truncated_group);
+  if (dec_status.IsFatalError()) return dec_status;
   image.undo_transforms(header->wp_header, undo_transforms);
   if (image.error) return JXL_FAILURE("Corrupt file. Aborting.");
   size_t bit_pos = br->TotalBitsConsumed();
@@ -1024,7 +1026,7 @@ Status ModularGenericDecompress(BitReader *br, Image &image,
     }
   }
 #endif
-  return true;
+  return dec_status;
 }
 
 }  // namespace jxl

@@ -25,6 +25,7 @@
 #include "lib/jxl/common.h"
 #include "lib/jxl/convolve.h"
 #include "lib/jxl/dec_noise.h"
+#include "lib/jxl/dec_upsample.h"
 #include "lib/jxl/filters.h"
 #include "lib/jxl/image.h"
 #include "lib/jxl/passes_state.h"
@@ -42,6 +43,9 @@ struct PassesDecoderState {
   // Whether some AC groups are only partially present. This implies that we
   // need to run ApplyImageFeatures at the end, and not per-group.
   bool has_partial_ac_groups = false;
+
+  // Upsampler for the current frame.
+  Upsampler upsampler;
 
   // Storage for RNG output for noise synthesis.
   Image3F noise;
@@ -63,6 +67,10 @@ struct PassesDecoderState {
   // Seed for noise, to have different noise per-frame.
   size_t noise_seed = 0;
 
+  // Storage for coefficients if in "accumulate" mode.
+  // TODO(veluca): not yet implemented - just used to memorize 16-vs-32 bits.
+  std::unique_ptr<ACImage> coefficients = make_unique<ACImageT<int32_t>>(0, 0);
+
   // Filter application pipeline used by ApplyImageFeatures. One entry is needed
   // per thread.
   std::vector<FilterPipeline> filter_pipelines;
@@ -70,10 +78,6 @@ struct PassesDecoderState {
   // Input weights used by the filters. These are shared from multiple threads
   // but are read-only for the filter application.
   FilterWeights filter_weights;
-
-  // Hook to do colorspace transforms to an ImageBundle.
-  std::function<Status(ImageBundle*, const ColorEncoding&, ThreadPool*)>
-      do_colorspace_transform = nullptr;
 
   void EnsureStorage(size_t num_threads) {
     // TODO(deymo): Don't request any memory if there's no need to apply any
@@ -155,8 +159,12 @@ struct GroupDecCache {
   }
 
   // Scratch space used by DecGroupImpl().
+  // TODO(veluca): figure out if we can use unions here.
   HWY_ALIGN_MAX float dec_group_block[3 * AcStrategy::kMaxCoeffArea];
-  HWY_ALIGN_MAX float dec_group_local_block[AcStrategy::kMaxCoeffArea];
+  union {
+    HWY_ALIGN_MAX int32_t dec_group_qblock[3 * AcStrategy::kMaxCoeffArea];
+    HWY_ALIGN_MAX int16_t dec_group_qblock16[3 * AcStrategy::kMaxCoeffArea];
+  };
   // For TransformToPixels.
   HWY_ALIGN_MAX float scratch_space[2 * AcStrategy::kMaxCoeffArea];
 

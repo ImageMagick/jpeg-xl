@@ -58,15 +58,17 @@ void InitializePassesEncoder(const Image3F& opsin, ThreadPool* pool,
   enc_state->b_qm_multiplier =
       std::pow(1.25f, shared.frame_header.b_qm_scale - 2.0f);
 
-  if (enc_state->coeffs.size() != shared.frame_header.passes.num_passes) {
-    enc_state->coeffs.resize(shared.frame_header.passes.num_passes);
-    for (size_t i = 0; i < shared.frame_header.passes.num_passes; i++) {
-      static_assert(std::is_same<float, ac_qcoeff_t>::value,
-                    "float != ac_coeff_t");
+  if (enc_state->coeffs.size() < shared.frame_header.passes.num_passes) {
+    enc_state->coeffs.reserve(shared.frame_header.passes.num_passes);
+    for (size_t i = enc_state->coeffs.size();
+         i < shared.frame_header.passes.num_passes; i++) {
       // Allocate enough coefficients for each group on every row.
-      enc_state->coeffs[i] =
-          ACImage3(kGroupDim * kGroupDim, shared.frame_dim.num_groups);
+      enc_state->coeffs.emplace_back(make_unique<ACImageT<int32_t>>(
+          kGroupDim * kGroupDim, shared.frame_dim.num_groups));
     }
+  }
+  while (enc_state->coeffs.size() > shared.frame_header.passes.num_passes) {
+    enc_state->coeffs.pop_back();
   }
 
   Image3F dc(shared.frame_dim.xsize_blocks, shared.frame_dim.ysize_blocks);
@@ -145,7 +147,7 @@ void InitializePassesEncoder(const Image3F& opsin, ThreadPool* pool,
     ImageBundle decoded(&shared.metadata->m);
     PassesDecoderState dec_state;
     JXL_CHECK(DecodeFrame({}, &dec_state, pool, &br, nullptr, &decoded,
-                          *shared.metadata));
+                          *shared.metadata, /*constraints=*/nullptr));
     // TODO(lode): shared.frame_header.dc_level should be equal to
     // dec_state.shared->frame_header.dc_level - 1 here, since above we set
     // dc_frame_info.dc_level = shared.frame_header.dc_level + 1, and

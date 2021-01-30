@@ -153,6 +153,7 @@ set(JPEGXL_INTERNAL_SOURCES
   jxl/enc_xyb.cc
   jxl/enc_xyb.h
   jxl/encode.cc
+  jxl/encode_internal.h
   jxl/entropy_coder.cc
   jxl/entropy_coder.h
   jxl/epf.cc
@@ -294,9 +295,9 @@ if (JPEGXL_ENABLE_SKCMS)
     $<TARGET_PROPERTY:skcms,INCLUDE_DIRECTORIES>
   )
 else ()
-  #target_include_directories(jxl-obj PRIVATE
-  #  $<TARGET_PROPERTY:lcms2,INCLUDE_DIRECTORIES>
-  #)
+  target_include_directories(jxl-obj PRIVATE
+    $<TARGET_PROPERTY:lcms2,INCLUDE_DIRECTORIES>
+  )
 endif ()
 
 # Headers for exporting/importing public headers
@@ -340,12 +341,13 @@ if(${JPEGXL_ENABLE_TCMALLOC})
   # tcmalloc 2.8 has concurrency issues that makes it sometimes return nullptr
   # for large allocs. See https://github.com/gperftools/gperftools/issues/1204
   # for details.
-  if(NOT TCMallocMinimal_VERSION VERSION_LESS 2.8)
+  if(TCMallocMinimal_VERSION VERSION_EQUAL 2.8)
     message(FATAL_ERROR
-        "tcmalloc version >= 2.8 have a concurrency bug. You have installed "
+        "tcmalloc version 2.8 has a concurrency bug. You have installed "
         "version ${TCMallocMinimal_VERSION}, please either downgrade tcmalloc "
-        "to version 2.7 or pass -DJPEGXL_ENABLE_TCMALLOC=OFF to jpeg-xl "
-        "cmake line. See the following bug for details:\n"
+        "to version 2.7, upgrade to 2.8.1 or newer or pass "
+        "-DJPEGXL_ENABLE_TCMALLOC=OFF to jpeg-xl cmake line. See the following "
+        "bug for details:\n"
         "   https://github.com/gperftools/gperftools/issues/1204\n")
   endif()
   target_link_libraries(jxl-static PUBLIC PkgConfig::TCMallocMinimal)

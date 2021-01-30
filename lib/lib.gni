@@ -17,7 +17,7 @@
 # Library version macros
 libjxl_version_defines = [
     "JPEGXL_MAJOR_VERSION=0",
-    "JPEGXL_MINOR_VERSION=2",
+    "JPEGXL_MINOR_VERSION=3",
     "JPEGXL_PATCH_VERSION=0",
 ]
 
@@ -161,6 +161,7 @@ libjxl_sources = [
     "jxl/enc_xyb.cc",
     "jxl/enc_xyb.h",
     "jxl/encode.cc",
+    "jxl/encode_internal.h",
     "jxl/entropy_coder.cc",
     "jxl/entropy_coder.h",
     "jxl/epf.cc",
