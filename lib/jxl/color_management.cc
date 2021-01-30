@@ -990,10 +990,10 @@ Status MaybeCreateProfile(const cmsContext context, const ColorEncoding& c,
       JXL_NOTIFY_ERROR("XYB ICC not yet implemented");
       break;
     default:
-      return JXL_FAILURE("Unknown CS %u", c.GetColorSpace());
+      return JXL_FAILURE("Unknown CS %u", (uint32_t) c.GetColorSpace());
   }
   if (profile.get() == nullptr) {
-    return JXL_FAILURE("Failed to create profile (cs = %u)", c.GetColorSpace());
+    return JXL_FAILURE("Failed to create profile (cs = %u)", (uint32_t) c.GetColorSpace());
   }
 
   // ICC uses the same values.
