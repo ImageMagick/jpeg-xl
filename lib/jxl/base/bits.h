@@ -20,7 +20,7 @@
 #include "lib/jxl/base/compiler_specific.h"
 #include "lib/jxl/base/status.h"
 
-#ifdef JXL_COMPILER_MSVC
+#if JXL_COMPILER_MSVC
 #include <intrin.h>
 #endif
 
@@ -70,7 +70,7 @@ static JXL_INLINE JXL_MAYBE_UNUSED size_t PopCount(T x) {
 static JXL_INLINE JXL_MAYBE_UNUSED size_t
 Num0BitsAboveMS1Bit_Nonzero(SizeTag<4> /* tag */, const uint32_t x) {
   JXL_DASSERT(x != 0);
-#ifdef JXL_COMPILER_MSVC
+#if JXL_COMPILER_MSVC
   unsigned long index;
   _BitScanReverse(&index, x);
   return 31 - index;
@@ -108,7 +108,7 @@ Num0BitsAboveMS1Bit_Nonzero(const T x) {
 static JXL_INLINE JXL_MAYBE_UNUSED size_t
 Num0BitsBelowLS1Bit_Nonzero(SizeTag<4> /* tag */, const uint32_t x) {
   JXL_DASSERT(x != 0);
-#ifdef JXL_COMPILER_MSVC
+#if JXL_COMPILER_MSVC
   unsigned long index;
   _BitScanForward(&index, x);
   return index;
