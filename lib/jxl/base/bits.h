@@ -68,7 +68,7 @@ static JXL_INLINE JXL_MAYBE_UNUSED size_t PopCount(T x) {
 static JXL_INLINE JXL_MAYBE_UNUSED size_t
 Num0BitsAboveMS1Bit_Nonzero(SizeTag<4> /* tag */, const uint32_t x) {
   JXL_DASSERT(x != 0);
-#if HWY_COMPILER_MSVC
+#if JXL_COMPILER_MSVC
   unsigned long index;
   _BitScanReverse(&index, x);
   return 31 - index;
@@ -79,7 +79,7 @@ Num0BitsAboveMS1Bit_Nonzero(SizeTag<4> /* tag */, const uint32_t x) {
 static JXL_INLINE JXL_MAYBE_UNUSED size_t
 Num0BitsAboveMS1Bit_Nonzero(SizeTag<8> /* tag */, const uint64_t x) {
   JXL_DASSERT(x != 0);
-#if HWY_COMPILER_MSVC
+#if JXL_COMPILER_MSVC
 #if HWY_ARCH_X86_64
   unsigned long index;
   _BitScanReverse64(&index, x);
@@ -112,7 +112,7 @@ Num0BitsAboveMS1Bit_Nonzero(const T x) {
 static JXL_INLINE JXL_MAYBE_UNUSED size_t
 Num0BitsBelowLS1Bit_Nonzero(SizeTag<4> /* tag */, const uint32_t x) {
   JXL_DASSERT(x != 0);
-#if HWY_COMPILER_MSVC
+#if JXL_COMPILER_MSVC
   unsigned long index;
   _BitScanForward(&index, x);
   return index;
@@ -123,12 +123,12 @@ Num0BitsBelowLS1Bit_Nonzero(SizeTag<4> /* tag */, const uint32_t x) {
 static JXL_INLINE JXL_MAYBE_UNUSED size_t
 Num0BitsBelowLS1Bit_Nonzero(SizeTag<8> /* tag */, const uint64_t x) {
   JXL_DASSERT(x != 0);
-#if HWY_COMPILER_MSVC
-#if HWY_ARCH_X86_64
+#if JXL_COMPILER_MSVC
+#if _WIN64
   unsigned long index;
   _BitScanForward64(&index, x);
   return index;
-#else  // HWY_ARCH_X86_64
+#else  // _WIN64
   // _BitScanForward64 not available
   uint32_t lsb = static_cast<uint32_t>(x & 0xFFFFFFFF);
   unsigned long index;
@@ -140,7 +140,7 @@ Num0BitsBelowLS1Bit_Nonzero(SizeTag<8> /* tag */, const uint64_t x) {
     _BitScanForward(&index, lsb);
     return index;
   }
-#endif  // HWY_ARCH_X86_64
+#endif  // _WIN64
 #else
   return static_cast<size_t>(__builtin_ctzll(x));
 #endif
