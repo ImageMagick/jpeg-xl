@@ -32,9 +32,9 @@ set(TEST_FILES
   jxl/dct_test.cc
   jxl/decode_test.cc
   jxl/descriptive_statistics_test.cc
+  jxl/enc_external_image_test.cc
   jxl/encode_test.cc
   jxl/entropy_coder_test.cc
-  jxl/external_image_test.cc
   jxl/fast_math_test.cc
   jxl/fields_test.cc
   jxl/filters_internal_test.cc
@@ -100,7 +100,6 @@ foreach (TESTFILE IN LISTS TEST_FILES)
   )
   target_link_libraries(${TESTNAME}
     box
-    djxltool
     jxl-static
     jxl_threads-static
     jxl_extras-static
@@ -114,8 +113,8 @@ foreach (TESTFILE IN LISTS TEST_FILES)
     set_target_properties(${TESTNAME} PROPERTIES COMPILE_FLAGS "-Wno-error")
   endif ()
   if(${CMAKE_VERSION} VERSION_LESS "3.10.3")
-    gtest_discover_tests(${TESTNAME} TIMEOUT 60)
+    gtest_discover_tests(${TESTNAME} TIMEOUT 240)
   else ()
-    gtest_discover_tests(${TESTNAME} DISCOVERY_TIMEOUT 60)
+    gtest_discover_tests(${TESTNAME} DISCOVERY_TIMEOUT 240)
   endif ()
 endforeach ()

@@ -24,10 +24,10 @@
 #include "lib/extras/codec.h"
 #include "lib/jxl/aux_out.h"
 #include "lib/jxl/base/data_parallel.h"
-#include "lib/jxl/base/os_specific.h"
 #include "lib/jxl/base/override.h"
 #include "lib/jxl/base/padded_bytes.h"
 #include "lib/jxl/base/span.h"
+#include "lib/jxl/base/time.h"
 #include "lib/jxl/codec_in_out.h"
 #include "lib/jxl/dec_file.h"
 #include "lib/jxl/dec_params.h"
@@ -56,7 +56,7 @@ struct JxlArgs {
   bool use_ac_strategy;
   bool qprogressive;  // progressive with shift-quantization.
   bool progressive;
-  size_t progressive_dc;
+  int progressive_dc;
 
   Override noise;
   Override dots;
@@ -79,8 +79,8 @@ Status AddCommandLineOptionsJxlCodec(BenchmarkArgs* args) {
                 "Enable quantized progressive mode for AC.", false);
   args->AddFlag(&jxlargs->progressive, "progressive",
                 "Enable progressive mode for AC.", false);
-  args->AddUnsigned(&jxlargs->progressive_dc, "progressive_dc",
-                    "Enable progressive mode for DC.", 0);
+  args->AddSigned(&jxlargs->progressive_dc, "progressive_dc",
+                  "Enable progressive mode for DC.", -1);
 
   args->AddOverride(&jxlargs->noise, "noise",
                     "Enable(1)/disable(0) noise generation.");

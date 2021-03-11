@@ -29,15 +29,14 @@
 #endif
 
 #include "lib/jxl/aux_out.h"
-#include "lib/jxl/base/arch_specific.h"
 #include "lib/jxl/base/cache_aligned.h"
 #include "lib/jxl/base/compiler_specific.h"
 #include "lib/jxl/base/data_parallel.h"
-#include "lib/jxl/base/os_specific.h"
 #include "lib/jxl/base/padded_bytes.h"
 #include "lib/jxl/base/profiler.h"
 #include "lib/jxl/base/status.h"
 #include "lib/jxl/base/thread_pool_internal.h"
+#include "lib/jxl/base/time.h"
 #include "lib/jxl/codec_in_out.h"
 #include "lib/jxl/common.h"
 #include "lib/jxl/enc_cache.h"
@@ -49,6 +48,7 @@
 #include "lib/jxl/modular/encoding/encoding.h"
 #include "tools/args.h"
 #include "tools/box/box.h"
+#include "tools/cpu/cpu.h"
 #include "tools/speed_stats.h"
 
 namespace jpegxl {
@@ -354,7 +354,7 @@ void CompressArgs::AddCommandLineOptions(CommandLineParser* cmdline) {
                          &params.qprogressive_mode, &SetBooleanTrue, 1);
   cmdline->AddOptionValue('\0', "progressive_dc", "num_dc_frames",
                           "Use progressive mode for DC.",
-                          &params.progressive_dc, &ParseUnsigned, 1);
+                          &params.progressive_dc, &ParseSigned, 1);
   cmdline->AddOptionFlag('m', "modular",
                          "Use the modular mode (lossy / lossless).",
                          &params.modular_mode, &SetBooleanTrue, 1);
@@ -549,8 +549,15 @@ jxl::Status CompressArgs::ValidateArgs(const CommandLineParser& cmdline) {
     jpeg_transcode = false;
     default_settings = false;
   }
-  if (got_target_size || got_target_bpp || got_intensity_target)
+  if (got_target_size || got_target_bpp || got_intensity_target) {
     default_settings = false;
+  }
+
+  if (params.progressive_dc < -1 || params.progressive_dc > 2) {
+    fprintf(stderr, "Invalid/out of range progressive_dc (%d), try -1 to 2.\n",
+            params.progressive_dc);
+    return false;
+  }
 
   if (got_distance) {
     constexpr float butteraugli_min_dist = 0.1f;
@@ -625,8 +632,8 @@ jxl::Status CompressArgs::ValidateArgs(const CommandLineParser& cmdline) {
   // might fail, so only do so when necessary. Don't just check num_threads != 0
   // because the user may have set it to that.
   if (!cmdline.GetOption(opt_num_threads_id)->matched()) {
-    jxl::ProcessorTopology topology;
-    if (!jxl::DetectProcessorTopology(&topology)) {
+    cpu::ProcessorTopology topology;
+    if (!cpu::DetectProcessorTopology(&topology)) {
       // We have seen sporadic failures caused by setaffinity_np.
       fprintf(stderr,
               "Failed to choose default num_threads; you can avoid this "

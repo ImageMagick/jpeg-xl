@@ -18,6 +18,7 @@
 #include "gtest/gtest.h"
 #include "lib/extras/codec.h"
 #include "lib/jxl/enc_butteraugli_comparator.h"
+#include "lib/jxl/enc_splines.h"
 #include "lib/jxl/image_test_utils.h"
 #include "lib/jxl/testdata.h"
 
@@ -47,8 +48,8 @@ const float kYToB = cmap->YtoBRatio(0);
 constexpr float kTolerance = 0.003125;
 
 std::vector<Spline> DequantizeSplines(const Splines& splines) {
-  const auto& quantized_splines = splines.TestOnlyQuantizedSplines();
-  const auto& starting_points = splines.TestOnlyStartingPoints();
+  const auto& quantized_splines = splines.QuantizedSplines();
+  const auto& starting_points = splines.StartingPoints();
   JXL_ASSERT(quantized_splines.size() == starting_points.size());
 
   std::vector<Spline> dequantized;
@@ -196,7 +197,7 @@ TEST(SplinesTest, Serialization) {
               Pointwise(ControlPointsMatch(), spline_data));
 
   BitWriter writer;
-  splines.Encode(&writer, kLayerSplines, HistogramParams(), nullptr);
+  EncodeSplines(splines, &writer, kLayerSplines, HistogramParams(), nullptr);
   writer.ZeroPadToByte();
   const size_t bits_written = writer.BitsWritten();
 
@@ -239,8 +240,8 @@ TEST(SplinesTest, TooManySplinesTest) {
   Splines splines(kQuantizationAdjustment, std::move(quantized_splines),
                   std::move(starting_points));
   BitWriter writer;
-  splines.Encode(&writer, kLayerSplines, HistogramParams(SpeedTier::kFalcon, 1),
-                 nullptr);
+  EncodeSplines(splines, &writer, kLayerSplines,
+                HistogramParams(SpeedTier::kFalcon, 1), nullptr);
   writer.ZeroPadToByte();
   // Re-read splines.
   BitReader reader(writer.GetSpan());
@@ -261,7 +262,7 @@ TEST(SplinesTest, DuplicatePoints) {
                 /*color_dct=*/
                 {{1.f, 0.2f, 0.1f}, {35.7f, 10.3f}, {35.7f, 7.8f}},
                 /*sigma_dct=*/{10.f, 0.f, 0.f, 2.f}};
-  std::vector<Spline> spline_data { spline };
+  std::vector<Spline> spline_data{spline};
   std::vector<QuantizedSpline> quantized_splines;
   std::vector<Spline::Point> starting_points;
   for (const Spline& spline : spline_data) {
@@ -290,7 +291,7 @@ TEST(SplinesTest, Drawing) {
       /*color_dct=*/
       {{0.03125f, 0.00625f, 0.003125f}, {1.f, 0.321875f}, {1.f, 0.24375f}},
       /*sigma_dct=*/{0.3125f, 0.f, 0.f, 0.0625f}};
-  std::vector<Spline> spline_data = { spline };
+  std::vector<Spline> spline_data = {spline};
   std::vector<QuantizedSpline> quantized_splines;
   std::vector<Spline::Point> starting_points;
   for (const Spline& spline : spline_data) {

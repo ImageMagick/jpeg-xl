@@ -12,23 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef LIB_JXL_AR_CONTROL_FIELD_H_
-#define LIB_JXL_AR_CONTROL_FIELD_H_
+#ifndef LIB_JXL_BASE_ARCH_MACROS_H_
+#define LIB_JXL_BASE_ARCH_MACROS_H_
 
-#include "lib/jxl/ac_strategy.h"
-#include "lib/jxl/base/data_parallel.h"
-#include "lib/jxl/chroma_from_luma.h"
-#include "lib/jxl/common.h"
-#include "lib/jxl/enc_cache.h"
-#include "lib/jxl/enc_params.h"
-#include "lib/jxl/image.h"
-#include "lib/jxl/quant_weights.h"
+// Defines the JXL_ARCH_* macros.
 
 namespace jxl {
 
-void FindBestArControlField(const Image3F& opsin, PassesEncoderState* enc_state,
-                            ThreadPool* pool);
+#if defined(__x86_64__) || defined(_M_X64)
+#define JXL_ARCH_X64 1
+#else
+#define JXL_ARCH_X64 0
+#endif
+
+#if defined(__powerpc64__) || defined(_M_PPC)
+#define JXL_ARCH_PPC 1
+#else
+#define JXL_ARCH_PPC 0
+#endif
+
+#if defined(__aarch64__) || defined(__arm__)
+#define JXL_ARCH_ARM 1
+#else
+#define JXL_ARCH_ARM 0
+#endif
 
 }  // namespace jxl
 
-#endif  // LIB_JXL_AR_CONTROL_FIELD_H_
+#endif  // LIB_JXL_BASE_ARCH_MACROS_H_

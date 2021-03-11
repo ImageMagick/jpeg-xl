@@ -13,8 +13,8 @@
  * limitations under the License.
  */
 
-#ifndef JXL_ENCODE_INTERNAL_H_
-#define JXL_ENCODE_INTERNAL_H_
+#ifndef LIB_JXL_ENCODE_INTERNAL_H_
+#define LIB_JXL_ENCODE_INTERNAL_H_
 
 #include <vector>
 
@@ -43,12 +43,14 @@ typedef struct JxlEncoderQueuedFrame {
 Status ConvertExternalToInternalColorEncoding(const JxlColorEncoding& external,
                                               jxl::ColorEncoding* internal);
 
-JxlEncoderStatus BufferToImageBundle(const JxlPixelFormat& pixel_format,
-                                     uint32_t xsize, uint32_t ysize,
-                                     const void* buffer, size_t size,
-                                     jxl::ThreadPool* pool,
-                                     const jxl::ColorEncoding& c_current,
-                                     jxl::ImageBundle* ib);
+typedef std::array<uint8_t, 4> BoxType;
+
+// Utility function that makes a BoxType from a null terminated string literal.
+constexpr BoxType MakeBoxType(const char (&type)[5]) {
+  return BoxType({static_cast<uint8_t>(type[0]), static_cast<uint8_t>(type[1]),
+                  static_cast<uint8_t>(type[2]),
+                  static_cast<uint8_t>(type[3])});
+}
 
 }  // namespace jxl
 
@@ -56,15 +58,28 @@ struct JxlEncoderStruct {
   JxlMemoryManager memory_manager;
   jxl::MemoryManagerUniquePtr<jxl::ThreadPool> thread_pool{
       nullptr, jxl::MemoryManagerDeleteHelper(&memory_manager)};
+  std::vector<jxl::MemoryManagerUniquePtr<JxlEncoderOptions>> encoder_options;
+
   std::vector<jxl::MemoryManagerUniquePtr<jxl::JxlEncoderQueuedFrame>>
       input_frame_queue;
-  std::vector<jxl::MemoryManagerUniquePtr<JxlEncoderOptions>> encoder_options;
   std::vector<uint8_t> output_byte_queue;
-  bool wrote_headers;
+
+  bool use_container = false;
+  bool store_jpeg_metadata = false;
   jxl::CodecMetadata metadata;
+  std::vector<uint8_t> jpeg_metadata;
+
+  bool wrote_headers = false;
   jxl::CompressParams last_used_cparams;
 
+  // Takes the first frame in the input_frame_queue, encodes it, and appends the
+  // bytes to the output_byte_queue.
   JxlEncoderStatus RefillOutputByteQueue();
+
+  // Appends the bytes of a JXL box header with the provided type and size to
+  // the end of the output_byte_queue. If unbounded is true, the size won't be
+  // added to the header and the box will be assumed to continue until EOF.
+  void AppendBoxHeader(const jxl::BoxType& type, size_t size, bool unbounded);
 };
 
 struct JxlEncoderOptionsStruct {
@@ -72,4 +87,4 @@ struct JxlEncoderOptionsStruct {
   jxl::JxlEncoderOptionsValues values;
 };
 
-#endif /* JXL_ENCODE_INTERNAL_H_ */
+#endif  // LIB_JXL_ENCODE_INTERNAL_H_

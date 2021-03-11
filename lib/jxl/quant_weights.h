@@ -31,8 +31,6 @@
 #include "lib/jxl/base/status.h"
 #include "lib/jxl/common.h"
 #include "lib/jxl/dec_bit_reader.h"
-#include "lib/jxl/enc_bit_writer.h"
-#include "lib/jxl/enc_params.h"
 #include "lib/jxl/image.h"
 
 namespace jxl {
@@ -374,20 +372,25 @@ class DequantMatrices {
                     sizeof(kQuantTable) / sizeof *kQuantTable,
                 "Update this array when adding or removing AC strategies.");
 
-  DequantMatrices()
-      // TODO(janwas): integrate JxlMemoryManager pointers
-      : table_(hwy::AllocateAligned<float>(2 * kTotalTableSize)) {
+  DequantMatrices() {
     encodings_.resize(size_t(QuantTable::kNum), QuantEncoding::Library(0));
+    size_t pos = 0;
+    size_t offsets[kNum * 3];
     for (size_t i = 0; i < size_t(QuantTable::kNum); i++) {
       encodings_[i] = QuantEncoding::Library(0);
+      size_t num = required_size_[i] * kDCTBlockSize;
+      for (size_t c = 0; c < 3; c++) {
+        offsets[3 * i + c] = pos + c * num;
+      }
+      pos += 3 * num;
+    }
+    for (size_t i = 0; i < AcStrategy::kNumValidStrategies; i++) {
+      for (size_t c = 0; c < 3; c++) {
+        table_offsets_[i * 3 + c] = offsets[kQuantTable[i] * 3 + c];
+      }
     }
     // Default quantization tables need to be valid.
     JXL_CHECK(Compute());
-  }
-
-  // `modular_frame_encoder` is not owned. Used by SetCustom.
-  void SetModularFrameEncoder(ModularFrameEncoder* modular_frame_encoder) {
-    modular_frame_encoder_ = modular_frame_encoder;
   }
 
   static const QuantEncoding* Library();
@@ -412,7 +415,7 @@ class DequantMatrices {
 
   JXL_INLINE const float* InvMatrix(size_t quant_kind, size_t c) const {
     JXL_DASSERT(quant_kind < AcStrategy::kNumValidStrategies);
-    return &InvTable()[MatrixOffset(quant_kind, c)];
+    return &inv_table_[MatrixOffset(quant_kind, c)];
   }
 
   // DC quants are used in modular mode for XYB multipliers.
@@ -421,28 +424,18 @@ class DequantMatrices {
 
   JXL_INLINE float InvDCQuant(size_t c) const { return inv_dc_quant_[c]; }
 
-  void SetCustom(const std::vector<QuantEncoding>& encodings);
+  // For encoder.
+  void SetEncodings(const std::vector<QuantEncoding>& encodings) {
+    encodings_ = encodings;
+  }
 
-  // For consistency with QuantEncoding, higher values correspond to more
-  // precision.
-  void SetCustomDC(const float* dc) {
+  // For encoder.
+  void SetDCQuant(const float dc[3]) {
     for (size_t c = 0; c < 3; c++) {
       dc_quant_[c] = 1.0f / dc[c];
       inv_dc_quant_[c] = dc[c];
     }
-    // Roundtrip encode/decode DC to ensure same values as decoder.
-    BitWriter writer;
-    JXL_CHECK(EncodeDC(&writer, 0, nullptr));
-    writer.ZeroPadToByte();
-    BitReader br(writer.GetSpan());
-    // Called only in the encoder: should fail only for programmer errors.
-    JXL_CHECK(DecodeDC(&br));
-    JXL_CHECK(br.Close());
   }
-
-  Status Encode(BitWriter* writer, size_t layer, AuxOut* aux_out,
-                ModularFrameEncoder* modular_frame_encoder = nullptr) const;
-  Status EncodeDC(BitWriter* writer, size_t layer, AuxOut* aux_out) const;
 
   Status Decode(BitReader* br,
                 ModularFrameDecoder* modular_frame_decoder = nullptr);
@@ -461,8 +454,6 @@ class DequantMatrices {
                 "Update this array when adding or removing quant tables.");
 
  private:
-  float* InvTable() const { return table_.get() + kTotalTableSize; }
-
   Status Compute();
 
   static constexpr size_t required_size_[] = {
@@ -473,18 +464,14 @@ class DequantMatrices {
       ArraySum(required_size_) * kDCTBlockSize * 3;
 
   // kTotalTableSize entries followed by kTotalTableSize for inv_table
-  hwy::AlignedFreeUniquePtr<float[]> table_;
+  hwy::AlignedFreeUniquePtr<float[]> table_storage_;
+  const float* table_;
+  const float* inv_table_;
   float dc_quant_[3] = {kDCQuant[0], kDCQuant[1], kDCQuant[2]};
   float inv_dc_quant_[3] = {kInvDCQuant[0], kInvDCQuant[1], kInvDCQuant[2]};
   size_t table_offsets_[AcStrategy::kNumValidStrategies * 3];
   std::vector<QuantEncoding> encodings_;
-  ModularFrameEncoder* modular_frame_encoder_ = nullptr;
 };
-
-void FindBestDequantMatrices(const CompressParams& cparams,
-                             const Image3F& opsin,
-                             ModularFrameEncoder* modular_frame_encoder,
-                             DequantMatrices* dequant_matrices);
 
 }  // namespace jxl
 

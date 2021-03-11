@@ -21,18 +21,13 @@
 #include <limits>
 #include <utility>
 
-#include "lib/jxl/aux_out.h"
-#include "lib/jxl/aux_out_fwd.h"
 #include "lib/jxl/base/bits.h"
 #include "lib/jxl/base/status.h"
 #include "lib/jxl/common.h"
 #include "lib/jxl/dct_scales.h"
-#include "lib/jxl/enc_bit_writer.h"
-#include "lib/jxl/enc_modular.h"
+#include "lib/jxl/dec_modular.h"
 #include "lib/jxl/fields.h"
 #include "lib/jxl/image.h"
-#include "lib/jxl/modular/encoding/encoding.h"
-#include "lib/jxl/modular/options.h"
 
 namespace jxl {
 
@@ -147,19 +142,6 @@ Status GetQuantWeights(
   return true;
 }
 
-Status EncodeDctParams(const DctQuantWeightParams& params, BitWriter* writer) {
-  JXL_ASSERT(params.num_distance_bands >= 1);
-  writer->Write(DctQuantWeightParams::kLog2MaxDistanceBands,
-                params.num_distance_bands - 1);
-  for (size_t c = 0; c < 3; c++) {
-    for (size_t i = 0; i < params.num_distance_bands; i++) {
-      JXL_RETURN_IF_ERROR(F16Coder::Write(
-          params.distance_bands[c][i] * (i == 0 ? (1 / 64.0f) : 1.0f), writer));
-    }
-  }
-  return true;
-}
-
 Status DecodeDctParams(BitReader* br, DctQuantWeightParams* params) {
   params->num_distance_bands =
       br->ReadFixedBits<DctQuantWeightParams::kLog2MaxDistanceBands>() + 1;
@@ -171,78 +153,6 @@ Status DecodeDctParams(BitReader* br, DctQuantWeightParams* params) {
       return JXL_FAILURE("Distance band seed is too small");
     }
     params->distance_bands[c][0] *= 64.0f;
-  }
-  return true;
-}
-
-Status EncodeQuant(const QuantEncoding& encoding, size_t idx, size_t size_x,
-                   size_t size_y, BitWriter* writer,
-                   ModularFrameEncoder* modular_frame_encoder) {
-  writer->Write(kLog2NumQuantModes, encoding.mode);
-  size_x *= kBlockDim;
-  size_y *= kBlockDim;
-  switch (encoding.mode) {
-    case QuantEncoding::kQuantModeLibrary: {
-      writer->Write(kCeilLog2NumPredefinedTables, encoding.predefined);
-      break;
-    }
-    case QuantEncoding::kQuantModeID: {
-      for (size_t c = 0; c < 3; c++) {
-        for (size_t i = 0; i < 3; i++) {
-          JXL_RETURN_IF_ERROR(
-              F16Coder::Write(encoding.idweights[c][i] * (1.0f / 64), writer));
-        }
-      }
-      break;
-    }
-    case QuantEncoding::kQuantModeDCT2: {
-      for (size_t c = 0; c < 3; c++) {
-        for (size_t i = 0; i < 6; i++) {
-          JXL_RETURN_IF_ERROR(F16Coder::Write(
-              encoding.dct2weights[c][i] * (1.0f / 64), writer));
-        }
-      }
-      break;
-    }
-    case QuantEncoding::kQuantModeDCT4X8: {
-      for (size_t c = 0; c < 3; c++) {
-        JXL_RETURN_IF_ERROR(
-            F16Coder::Write(encoding.dct4x8multipliers[c], writer));
-      }
-      JXL_RETURN_IF_ERROR(EncodeDctParams(encoding.dct_params, writer));
-      break;
-    }
-    case QuantEncoding::kQuantModeDCT4: {
-      for (size_t c = 0; c < 3; c++) {
-        for (size_t i = 0; i < 2; i++) {
-          JXL_RETURN_IF_ERROR(
-              F16Coder::Write(encoding.dct4multipliers[c][i], writer));
-        }
-      }
-      JXL_RETURN_IF_ERROR(EncodeDctParams(encoding.dct_params, writer));
-      break;
-    }
-    case QuantEncoding::kQuantModeDCT: {
-      JXL_RETURN_IF_ERROR(EncodeDctParams(encoding.dct_params, writer));
-      break;
-    }
-    case QuantEncoding::kQuantModeRAW: {
-      ModularFrameEncoder::EncodeQuantTable(size_x, size_y, writer, encoding,
-                                            idx, modular_frame_encoder);
-      break;
-    }
-    case QuantEncoding::kQuantModeAFV: {
-      for (size_t c = 0; c < 3; c++) {
-        for (size_t i = 0; i < 9; i++) {
-          JXL_RETURN_IF_ERROR(F16Coder::Write(
-              encoding.afv_weights[c][i] * (i < 6 ? 1.0f / 64 : 1.0f), writer));
-        }
-        JXL_RETURN_IF_ERROR(EncodeDctParams(encoding.dct_params, writer));
-        JXL_RETURN_IF_ERROR(
-            EncodeDctParams(encoding.dct_params_afv_4x4, writer));
-      }
-      break;
-    }
   }
   return true;
 }
@@ -344,8 +254,10 @@ Status Decode(BitReader* br, QuantEncoding* encoding, size_t required_size_x,
   return true;
 }
 
-Status ComputeQuantTable(const QuantEncoding& encoding, float* table,
-                         size_t* offsets, size_t table_num,
+// TODO(veluca): SIMD-fy. With 256x256, this is actually slow.
+Status ComputeQuantTable(const QuantEncoding& encoding,
+                         float* JXL_RESTRICT table,
+                         float* JXL_RESTRICT inv_table, size_t table_num,
                          DequantMatrices::QuantTable kind, size_t* pos) {
   std::vector<float> weights(3 * kMaxQuantTableSize);
 
@@ -506,14 +418,30 @@ Status ComputeQuantTable(const QuantEncoding& encoding, float* table,
       break;
     }
   }
+  size_t prev_pos = *pos;
   for (size_t c = 0; c < 3; c++) {
-    offsets[table_num * 3 + c] = *pos;
     for (size_t i = 0; i < num; i++) {
       float val = 1.0f / weights[c * num + i];
       if (val > std::numeric_limits<float>::max() || val < 0) {
         return JXL_FAILURE("Invalid quantization table");
       }
-      table[(*pos)++] = val;
+      table[*pos] = val;
+      inv_table[*pos] = 1.0f / val;
+      (*pos)++;
+    }
+  }
+  // Ensure that the lowest frequencies have a 0 inverse table.
+  // This does not affect en/decoding, but allows AC strategy selection to be
+  // slightly simpler.
+  size_t xs = DequantMatrices::required_size_x[kind];
+  size_t ys = DequantMatrices::required_size_y[kind];
+  CoefficientLayout(&ys, &xs);
+  for (size_t c = 0; c < 3; c++) {
+    for (size_t y = 0; y < ys; y++) {
+      for (size_t x = 0; x < xs; x++) {
+        inv_table[prev_pos + c * ys * xs * kDCTBlockSize + y * kBlockDim * xs +
+                  x] = 0;
+      }
     }
   }
   return true;
@@ -526,49 +454,6 @@ constexpr size_t DequantMatrices::required_size_[];
 constexpr size_t DequantMatrices::required_size_x[];
 constexpr size_t DequantMatrices::required_size_y[];
 constexpr DequantMatrices::QuantTable DequantMatrices::kQuantTable[];
-
-Status DequantMatrices::Encode(
-    BitWriter* writer, size_t layer, AuxOut* aux_out,
-    ModularFrameEncoder* modular_frame_encoder) const {
-  bool all_default = true;
-  for (size_t i = 0; i < encodings_.size(); i++) {
-    if (encodings_[i].mode != QuantEncoding::kQuantModeLibrary ||
-        encodings_[i].predefined != 0) {
-      all_default = false;
-    }
-  }
-  // TODO(janwas): better bound
-  BitWriter::Allotment allotment(writer, 512 * 1024);
-  writer->Write(1, all_default);
-  if (!all_default) {
-    for (size_t i = 0; i < encodings_.size(); i++) {
-      JXL_RETURN_IF_ERROR(EncodeQuant(encodings_[i], i, required_size_x[i],
-                                      required_size_y[i], writer,
-                                      modular_frame_encoder));
-    }
-  }
-  ReclaimAndCharge(writer, &allotment, layer, aux_out);
-  return true;
-}
-
-Status DequantMatrices::EncodeDC(BitWriter* writer, size_t layer,
-                                 AuxOut* aux_out) const {
-  bool all_default = true;
-  for (size_t c = 0; c < 3; c++) {
-    if (dc_quant_[c] != kDCQuant[c]) {
-      all_default = false;
-    }
-  }
-  BitWriter::Allotment allotment(writer, 1 + sizeof(float) * kBitsPerByte * 3);
-  writer->Write(1, all_default);
-  if (!all_default) {
-    for (size_t c = 0; c < 3; c++) {
-      JXL_RETURN_IF_ERROR(F16Coder::Write(dc_quant_[c] * 128.0f, writer));
-    }
-  }
-  ReclaimAndCharge(writer, &allotment, layer, aux_out);
-  return true;
-}
 
 Status DequantMatrices::Decode(BitReader* br,
                                ModularFrameDecoder* modular_frame_decoder) {
@@ -1229,12 +1114,9 @@ const DequantMatrices::DequantLibraryInternal DequantMatrices::LibraryInit() {
   };
 }
 
-namespace {
-const DequantMatrices::DequantLibraryInternal kDequantLibrary =
-    DequantMatrices::LibraryInit();
-}  // namespace
-
 const QuantEncoding* DequantMatrices::Library() {
+  static const DequantMatrices::DequantLibraryInternal kDequantLibrary =
+      DequantMatrices::LibraryInit();
   // Downcast the result to a const QuantEncoding* from QuantEncodingInternal*
   // since the subclass (QuantEncoding) doesn't add any new members and users
   // will need to upcast to QuantEncodingInternal to access the members of that
@@ -1250,112 +1132,54 @@ Status DequantMatrices::Compute() {
   struct DefaultMatrices {
     DefaultMatrices() {
       const QuantEncoding* library = Library();
-      std::vector<size_t> offsets(kNum * 3);
       size_t pos = 0;
       for (size_t i = 0; i < kNum; i++) {
-        JXL_CHECK(ComputeQuantTable(library[i], table, offsets.data(), i,
+        JXL_CHECK(ComputeQuantTable(library[i], table, inv_table, i,
                                     QuantTable(i), &pos));
       }
       JXL_CHECK(pos == kTotalTableSize);
     }
-    float table[kTotalTableSize];
+    HWY_ALIGN_MAX float table[kTotalTableSize];
+    HWY_ALIGN_MAX float inv_table[kTotalTableSize];
   };
 
   static const DefaultMatrices default_matrices;
 
-  // Avoid changing encodings_.
-  auto encodings = encodings_;
+  JXL_ASSERT(encodings_.size() == kNum);
 
-  std::vector<size_t> offsets(kNum * 3);
-
-  for (size_t table = 0; table < encodings.size(); table++) {
-    size_t prev_pos = pos;
-    if (encodings[table].mode == QuantEncoding::kQuantModeLibrary) {
-      size_t num = required_size_[table] * kDCTBlockSize;
-      for (size_t i = 0; i < 3; i++) {
-        offsets[3 * table + i] = pos + i * num;
-      }
-      memcpy(table_.get() + prev_pos, default_matrices.table + prev_pos,
-             num * sizeof(float) * 3);
-      pos += num * 3;
-    } else {
-      JXL_RETURN_IF_ERROR(ComputeQuantTable(encodings[table], table_.get(),
-                                            offsets.data(), table,
-                                            QuantTable(table % kNum), &pos));
-    }
-    // TODO(veluca): SIMD-fy. With 256x256, this is actually slow.
-    for (size_t i = prev_pos; i < pos; i++) {
-      InvTable()[i] = 1.0f / table_[i];
-    }
-    // Ensure that the lowest frequencies have a 0 inverse table.
-    // This does not affect en/decoding, but allows AC strategy selection to be
-    // slightly simpler.
-    size_t xs = required_size_x[QuantTable(table % kNum)];
-    size_t ys = required_size_y[QuantTable(table % kNum)];
-    CoefficientLayout(&ys, &xs);
-    for (size_t c = 0; c < 3; c++) {
-      for (size_t y = 0; y < ys; y++) {
-        for (size_t x = 0; x < xs; x++) {
-          InvTable()[prev_pos + c * ys * xs * kDCTBlockSize +
-                     y * kBlockDim * xs + x] = 0;
-        }
-      }
+  bool has_nondefault_matrix = false;
+  for (const auto& enc : encodings_) {
+    if (enc.mode != QuantEncoding::kQuantModeLibrary) {
+      has_nondefault_matrix = true;
     }
   }
-
-  JXL_ASSERT(pos == kTotalTableSize);
-
-  for (size_t i = 0; i < AcStrategy::kNumValidStrategies; i++) {
-    for (size_t c = 0; c < 3; c++) {
-      table_offsets_[i * 3 + c] = offsets[kQuantTable[i] * 3 + c];
+  if (has_nondefault_matrix) {
+    table_storage_ = hwy::AllocateAligned<float>(2 * kTotalTableSize);
+    table_ = table_storage_.get();
+    inv_table_ = table_storage_.get() + kTotalTableSize;
+    for (size_t table = 0; table < kNum; table++) {
+      size_t prev_pos = pos;
+      if (encodings_[table].mode == QuantEncoding::kQuantModeLibrary) {
+        size_t num = required_size_[table] * kDCTBlockSize;
+        memcpy(table_storage_.get() + prev_pos,
+               default_matrices.table + prev_pos, num * sizeof(float) * 3);
+        memcpy(table_storage_.get() + kTotalTableSize + prev_pos,
+               default_matrices.inv_table + prev_pos, num * sizeof(float) * 3);
+        pos += num * 3;
+      } else {
+        JXL_RETURN_IF_ERROR(
+            ComputeQuantTable(encodings_[table], table_storage_.get(),
+                              table_storage_.get() + kTotalTableSize, table,
+                              QuantTable(table), &pos));
+      }
     }
+    JXL_ASSERT(pos == kTotalTableSize);
+  } else {
+    table_ = default_matrices.table;
+    inv_table_ = default_matrices.inv_table;
   }
+
   return true;
-}
-
-void DequantMatrices::SetCustom(const std::vector<QuantEncoding>& encodings) {
-  JXL_ASSERT(encodings.size() == kNum);
-  JXL_ASSERT(modular_frame_encoder_ != nullptr);
-  encodings_ = encodings;
-  for (size_t i = 0; i < encodings_.size(); i++) {
-    if (encodings_[i].mode == QuantEncodingInternal::kQuantModeRAW) {
-      modular_frame_encoder_->AddQuantTable(required_size_x[i] * kBlockDim,
-                                            required_size_y[i] * kBlockDim,
-                                            encodings_[i], i);
-    }
-  }
-  // Roundtrip encode/decode the matrices to ensure same values as decoder.
-  // Do not pass modular en/decoder, as they only change entropy and not values.
-  BitWriter writer;
-  JXL_CHECK(Encode(&writer, 0, nullptr));
-  writer.ZeroPadToByte();
-  BitReader br(writer.GetSpan());
-  // Called only in the encoder: should fail only for programmer errors.
-  JXL_CHECK(Decode(&br));
-  JXL_CHECK(br.Close());
-}
-
-void FindBestDequantMatrices(const CompressParams& cparams,
-                             const Image3F& opsin,
-                             ModularFrameEncoder* modular_frame_encoder,
-                             DequantMatrices* dequant_matrices) {
-  // TODO(veluca): heuristics for in-bitstream quant tables.
-  *dequant_matrices = DequantMatrices();
-  dequant_matrices->SetModularFrameEncoder(modular_frame_encoder);
-  if (cparams.max_error_mode) {
-    // Set numerators of all quantization matrices to constant values.
-    float weights[3][1] = {{1.0f / cparams.max_error[0]},
-                           {1.0f / cparams.max_error[1]},
-                           {1.0f / cparams.max_error[2]}};
-    DctQuantWeightParams dct_params(weights);
-    std::vector<QuantEncoding> encodings(DequantMatrices::kNum,
-                                         QuantEncoding::DCT(dct_params));
-    dequant_matrices->SetCustom(encodings);
-    float dc_weights[3] = {1.0f / cparams.max_error[0],
-                           1.0f / cparams.max_error[1],
-                           1.0f / cparams.max_error[2]};
-    dequant_matrices->SetCustomDC(dc_weights);
-  }
 }
 
 }  // namespace jxl

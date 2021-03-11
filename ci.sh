@@ -560,6 +560,17 @@ cmd_test() {
    ctest -j $(nproc --all || echo 1) --output-on-failure "$@")
 }
 
+cmd_gbench() {
+  export_env
+  (cd "${BUILD_DIR}"
+   export UBSAN_OPTIONS=print_stacktrace=1
+   lib/jxl_gbench \
+     --benchmark_counters_tabular=true \
+     --benchmark_out_format=json \
+     --benchmark_out=gbench.json "$@"
+  )
+}
+
 cmd_asan() {
   SANITIZER="asan"
   CMAKE_C_FLAGS+=" -DJXL_ENABLE_ASSERT=1 -g -DADDRESS_SANITIZER \
@@ -1001,7 +1012,7 @@ cmd_arm_benchmark() {
           if [[ "${src_ext}" == "jpg" ]]; then
             wait_for_temp
             local dec_file="${BUILD_DIR}/arm_benchmark/${enc_file_hash}.jpg"
-            dec_output=$("${BUILD_DIR}/tools/djxl" --jpeg "${enc_file}" \
+            dec_output=$("${BUILD_DIR}/tools/djxl" "${enc_file}" \
               "${dec_file}" --num_reps=5 --num_threads="${num_threads}" 2>&1 | \
                 tee /dev/stderr | grep -E "M[BP]/s \[")
             local jpeg_dec_mps_speed=$(_speed_from_output "${dec_output}")
@@ -1247,6 +1258,7 @@ Where cmd is one of:
  tsan      Build and test a TSan (ThreadSanitizer) build.
  test      Run the tests build by opt, debug, release, asan or msan. Useful when
            building with SKIP_TEST=1.
+ gbench    Run the Google benchmark tests.
  fuzz      Generate the fuzzer corpus and run the fuzzer on it. Useful after
            building with asan or msan.
  benchmark Run the benchmark over the default corpus.

@@ -21,13 +21,15 @@
 #include <numeric>
 #include <string>
 
-#include "lib/jxl/ar_control_field.h"
 #include "lib/jxl/dot_dictionary.h"
 #include "lib/jxl/enc_ac_strategy.h"
 #include "lib/jxl/enc_adaptive_quantization.h"
+#include "lib/jxl/enc_ar_control_field.h"
 #include "lib/jxl/enc_cache.h"
 #include "lib/jxl/enc_modular.h"
 #include "lib/jxl/enc_noise.h"
+#include "lib/jxl/enc_patch_dictionary.h"
+#include "lib/jxl/enc_quant_weights.h"
 
 namespace jxl {
 namespace {
@@ -157,6 +159,29 @@ size_t TargetSize(const CompressParams& cparams,
   }
   return 0;
 }
+
+void FindBestDequantMatrices(const CompressParams& cparams,
+                             const Image3F& opsin,
+                             ModularFrameEncoder* modular_frame_encoder,
+                             DequantMatrices* dequant_matrices) {
+  // TODO(veluca): heuristics for in-bitstream quant tables.
+  *dequant_matrices = DequantMatrices();
+  if (cparams.max_error_mode) {
+    // Set numerators of all quantization matrices to constant values.
+    float weights[3][1] = {{1.0f / cparams.max_error[0]},
+                           {1.0f / cparams.max_error[1]},
+                           {1.0f / cparams.max_error[2]}};
+    DctQuantWeightParams dct_params(weights);
+    std::vector<QuantEncoding> encodings(DequantMatrices::kNum,
+                                         QuantEncoding::DCT(dct_params));
+    DequantMatricesSetCustom(dequant_matrices, encodings,
+                             modular_frame_encoder);
+    float dc_weights[3] = {1.0f / cparams.max_error[0],
+                           1.0f / cparams.max_error[1],
+                           1.0f / cparams.max_error[2]};
+    DequantMatricesSetCustomDC(dequant_matrices, dc_weights);
+  }
+}
 }  // namespace
 
 Status DefaultEncoderHeuristics::LossyFrameHeuristics(
@@ -164,32 +189,9 @@ Status DefaultEncoderHeuristics::LossyFrameHeuristics(
     const ImageBundle* linear, Image3F* opsin, ThreadPool* pool,
     AuxOut* aux_out) {
   PROFILER_ZONE("JxlLossyFrameHeuristics uninstrumented");
+
   CompressParams& cparams = enc_state->cparams;
   PassesSharedState& shared = enc_state->shared;
-  const FrameDimensions& frame_dim = enc_state->shared.frame_dim;
-  size_t target_size = TargetSize(cparams, frame_dim);
-  size_t opsin_target_size = target_size;
-  if (cparams.target_size > 0 || cparams.target_bitrate > 0.0) {
-    cparams.target_size = opsin_target_size;
-  } else if (cparams.butteraugli_distance < 0) {
-    return JXL_FAILURE("Expected non-negative distance");
-  }
-
-  // Compute an initial estimate of the quantization field.
-  if (cparams.speed_tier != SpeedTier::kFalcon) {
-    // Call InitialQuantField only in Hare mode or slower. Otherwise, rely
-    // on simple heuristics in FindBestAcStrategy.
-    if (cparams.speed_tier > SpeedTier::kHare) {
-      enc_state->initial_quant_field =
-          ImageF(shared.frame_dim.xsize_blocks, shared.frame_dim.ysize_blocks);
-    } else {
-      // Call this here, as it relies on pre-gaborish values.
-      // TODO(veluca): adjust to post-gaborish values.
-      // TODO(veluca): call after image features.
-      enc_state->initial_quant_field = InitialQuantField(
-          cparams.butteraugli_distance, *opsin, shared.frame_dim, pool, 1.0f);
-    }
-  }
 
   // Compute parameters for noise synthesis.
   if (shared.frame_header.flags & FrameHeader::kNoise) {
@@ -220,6 +222,38 @@ Status DefaultEncoderHeuristics::LossyFrameHeuristics(
       shared.frame_header.flags &= ~FrameHeader::kNoise;
     }
   }
+  if (cparams.resampling != 1) {
+    // In VarDCT mode, LossyFrameHeuristics takes care of running downsampling
+    // after noise, if necessary.
+    DownsampleImage(opsin, cparams.resampling);
+    PadImageToBlockMultipleInPlace(opsin);
+  }
+
+  const FrameDimensions& frame_dim = enc_state->shared.frame_dim;
+  size_t target_size = TargetSize(cparams, frame_dim);
+  size_t opsin_target_size = target_size;
+  if (cparams.target_size > 0 || cparams.target_bitrate > 0.0) {
+    cparams.target_size = opsin_target_size;
+  } else if (cparams.butteraugli_distance < 0) {
+    return JXL_FAILURE("Expected non-negative distance");
+  }
+
+  // Compute an initial estimate of the quantization field.
+  if (cparams.speed_tier != SpeedTier::kFalcon) {
+    // Call InitialQuantField only in Hare mode or slower. Otherwise, rely
+    // on simple heuristics in FindBestAcStrategy.
+    if (cparams.speed_tier > SpeedTier::kHare) {
+      enc_state->initial_quant_field =
+          ImageF(shared.frame_dim.xsize_blocks, shared.frame_dim.ysize_blocks);
+    } else {
+      // Call this here, as it relies on pre-gaborish values.
+      // TODO(veluca): adjust to post-gaborish values.
+      // TODO(veluca): call after image features.
+      enc_state->initial_quant_field = InitialQuantField(
+          cparams.butteraugli_distance, *opsin, shared.frame_dim, pool, 1.0f,
+          &enc_state->initial_quant_masking);
+    }
+  }
 
   // TODO(veluca): do something about animations.
 
@@ -234,7 +268,7 @@ Status DefaultEncoderHeuristics::LossyFrameHeuristics(
   if (ApplyOverride(cparams.patches,
                     cparams.speed_tier <= SpeedTier::kSquirrel)) {
     FindBestPatchDictionary(*opsin, enc_state, pool, aux_out);
-    shared.image_features.patches.SubtractFrom(opsin);
+    PatchDictionaryEncoder::SubtractFrom(shared.image_features.patches, opsin);
   }
 
   // Apply inverse-gaborish.

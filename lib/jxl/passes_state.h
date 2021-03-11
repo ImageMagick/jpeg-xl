@@ -19,13 +19,13 @@
 #include "lib/jxl/ac_strategy.h"
 #include "lib/jxl/chroma_from_luma.h"
 #include "lib/jxl/common.h"
+#include "lib/jxl/dec_patch_dictionary.h"
 #include "lib/jxl/dot_dictionary.h"
 #include "lib/jxl/frame_header.h"
 #include "lib/jxl/image.h"
 #include "lib/jxl/image_bundle.h"
 #include "lib/jxl/loop_filter.h"
 #include "lib/jxl/noise.h"
-#include "lib/jxl/patch_dictionary.h"
 #include "lib/jxl/quant_weights.h"
 #include "lib/jxl/quantizer.h"
 #include "lib/jxl/splines.h"
@@ -70,6 +70,10 @@ struct PassesSharedState {
   ImageFeatures image_features;
 
   // Memory area for storing coefficient orders.
+  // `coeff_order_size` is the size used by *one* set of coefficient orders (at
+  // most kMaxCoeffOrderSize). A set of coefficient orders is present for each
+  // pass.
+  size_t coeff_order_size = 0;
   std::vector<coeff_order_t> coeff_orders;
 
   // Decoder-side DC and quantized DC.

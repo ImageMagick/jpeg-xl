@@ -27,13 +27,10 @@ set(JPEGXL_INTERNAL_SOURCES_DEC
   jxl/ans_common.cc
   jxl/ans_common.h
   jxl/ans_params.h
-  jxl/ar_control_field.cc
-  jxl/ar_control_field.h
   jxl/aux_out.cc
   jxl/aux_out.h
   jxl/aux_out_fwd.h
-  jxl/base/arch_specific.cc
-  jxl/base/arch_specific.h
+  jxl/base/arch_macros.h
   jxl/base/bits.h
   jxl/base/byte_order.h
   jxl/base/cache_aligned.cc
@@ -45,24 +42,20 @@ set(JPEGXL_INTERNAL_SOURCES_DEC
   jxl/base/descriptive_statistics.h
   jxl/base/file_io.h
   jxl/base/iaca.h
-  jxl/base/os_specific.cc
-  jxl/base/os_specific.h
+  jxl/base/os_macros.h
   jxl/base/override.h
   jxl/base/padded_bytes.cc
   jxl/base/padded_bytes.h
-  jxl/base/profiler.cc
   jxl/base/profiler.h
   jxl/base/robust_statistics.h
   jxl/base/span.h
   jxl/base/status.cc
   jxl/base/status.h
   jxl/base/thread_pool_internal.h
-  jxl/base/tsc_timer.h
+  jxl/base/time.cc
+  jxl/base/time.h
   jxl/blending.cc
   jxl/blending.h
-  jxl/butteraugli/butteraugli.cc
-  jxl/butteraugli/butteraugli.h
-  jxl/butteraugli_wrapper.cc
   jxl/chroma_from_luma.cc
   jxl/chroma_from_luma.h
   jxl/codec_in_out.h
@@ -90,6 +83,8 @@ set(JPEGXL_INTERNAL_SOURCES_DEC
   jxl/dec_cache.h
   jxl/dec_context_map.cc
   jxl/dec_context_map.h
+  jxl/dec_external_image.cc
+  jxl/dec_external_image.h
   jxl/dec_file.cc
   jxl/dec_file.h
   jxl/dec_frame.cc
@@ -103,6 +98,8 @@ set(JPEGXL_INTERNAL_SOURCES_DEC
   jxl/dec_noise.cc
   jxl/dec_noise.h
   jxl/dec_params.h
+  jxl/dec_patch_dictionary.cc
+  jxl/dec_patch_dictionary.h
   jxl/dec_reconstruct.cc
   jxl/dec_reconstruct.h
   jxl/dec_transforms-inl.h
@@ -122,8 +119,6 @@ set(JPEGXL_INTERNAL_SOURCES_DEC
   jxl/entropy_coder.h
   jxl/epf.cc
   jxl/epf.h
-  jxl/external_image.cc
-  jxl/external_image.h
   jxl/fast_math-inl.h
   jxl/field_encodings.h
   jxl/fields.cc
@@ -145,6 +140,8 @@ set(JPEGXL_INTERNAL_SOURCES_DEC
   jxl/huffman_tree.h
   jxl/icc_codec.cc
   jxl/icc_codec.h
+  jxl/icc_codec_common.cc
+  jxl/icc_codec_common.h
   jxl/image.cc
   jxl/image.h
   jxl/image_bundle.cc
@@ -158,12 +155,6 @@ set(JPEGXL_INTERNAL_SOURCES_DEC
   jxl/jpeg/dec_jpeg_data_writer.h
   jxl/jpeg/dec_jpeg_output_chunk.h
   jxl/jpeg/dec_jpeg_serialization_state.h
-  jxl/jpeg/enc_jpeg_data.cc
-  jxl/jpeg/enc_jpeg_data.h
-  jxl/jpeg/enc_jpeg_data_reader.cc
-  jxl/jpeg/enc_jpeg_data_reader.h
-  jxl/jpeg/enc_jpeg_huffman_decode.cc
-  jxl/jpeg/enc_jpeg_huffman_decode.h
   jxl/jpeg/jpeg_data.cc
   jxl/jpeg/jpeg_data.h
   jxl/jxl_inspection.h
@@ -198,8 +189,7 @@ set(JPEGXL_INTERNAL_SOURCES_DEC
   jxl/optimize.h
   jxl/passes_state.cc
   jxl/passes_state.h
-  jxl/patch_dictionary.cc
-  jxl/patch_dictionary.h
+  jxl/patch_dictionary_internal.h
   jxl/progressive_split.cc
   jxl/progressive_split.h
   jxl/quant_weights.cc
@@ -219,12 +209,17 @@ set(JPEGXL_INTERNAL_SOURCES_DEC
 
 # List of source files only needed by the encoder, not the decoder.
 set(JPEGXL_INTERNAL_SOURCES_ENC
+  jxl/butteraugli/butteraugli.cc
+  jxl/butteraugli/butteraugli.h
+  jxl/butteraugli_wrapper.cc
   jxl/enc_ac_strategy.cc
   jxl/enc_ac_strategy.h
   jxl/enc_adaptive_quantization.cc
   jxl/enc_adaptive_quantization.h
   jxl/enc_ans.cc
   jxl/enc_ans.h
+  jxl/enc_ar_control_field.cc
+  jxl/enc_ar_control_field.h
   jxl/enc_bit_writer.cc
   jxl/enc_bit_writer.h
   jxl/enc_butteraugli_comparator.cc
@@ -235,10 +230,14 @@ set(JPEGXL_INTERNAL_SOURCES_ENC
   jxl/enc_cache.h
   jxl/enc_cluster.cc
   jxl/enc_cluster.h
+  jxl/enc_coeff_order.cc
+  jxl/enc_coeff_order.h
   jxl/enc_comparator.cc
   jxl/enc_comparator.h
   jxl/enc_context_map.cc
   jxl/enc_context_map.h
+  jxl/enc_external_image.cc
+  jxl/enc_external_image.h
   jxl/enc_fast_heuristics.cc
   jxl/enc_file.cc
   jxl/enc_file.h
@@ -251,11 +250,21 @@ set(JPEGXL_INTERNAL_SOURCES_ENC
   jxl/enc_heuristics.h
   jxl/enc_huffman.cc
   jxl/enc_huffman.h
+  jxl/enc_icc_codec.cc
+  jxl/enc_icc_codec.h
   jxl/enc_modular.cc
   jxl/enc_modular.h
   jxl/enc_noise.cc
   jxl/enc_noise.h
   jxl/enc_params.h
+  jxl/enc_patch_dictionary.cc
+  jxl/enc_patch_dictionary.h
+  jxl/enc_quant_weights.cc
+  jxl/enc_quant_weights.h
+  jxl/enc_splines.cc
+  jxl/enc_splines.h
+  jxl/enc_toc.cc
+  jxl/enc_toc.h
   jxl/enc_transforms-inl.h
   jxl/enc_transforms.cc
   jxl/enc_transforms.h
@@ -263,6 +272,14 @@ set(JPEGXL_INTERNAL_SOURCES_ENC
   jxl/enc_xyb.h
   jxl/encode.cc
   jxl/encode_internal.h
+  jxl/jpeg/enc_jpeg_data.cc
+  jxl/jpeg/enc_jpeg_data.h
+  jxl/jpeg/enc_jpeg_data_reader.cc
+  jxl/jpeg/enc_jpeg_data_reader.h
+  jxl/jpeg/enc_jpeg_huffman_decode.cc
+  jxl/jpeg/enc_jpeg_huffman_decode.h
+  jxl/modular/encoding/enc_encoding.cc
+  jxl/modular/encoding/enc_encoding.h
 )
 
 set(JPEGXL_INTERNAL_LIBS
@@ -278,7 +295,7 @@ if (JPEGXL_ENABLE_SKCMS)
   list(APPEND JPEGXL_INTERNAL_FLAGS -DJPEGXL_ENABLE_SKCMS=1)
   list(APPEND JPEGXL_INTERNAL_LIBS skcms)
 else ()
-  #list(APPEND JPEGXL_INTERNAL_LIBS lcms2)
+  list(APPEND JPEGXL_INTERNAL_LIBS lcms2)
 endif ()
 
 set(OBJ_COMPILE_DEFINITIONS
@@ -330,12 +347,12 @@ if (JPEGXL_ENABLE_SKCMS)
     $<TARGET_PROPERTY:skcms,INCLUDE_DIRECTORIES>
   )
 else ()
-  #target_include_directories(jxl_enc-obj PRIVATE
-  #  $<TARGET_PROPERTY:lcms2,INCLUDE_DIRECTORIES>
-  #)
-  #target_include_directories(jxl_dec-obj PRIVATE
-  #  $<TARGET_PROPERTY:lcms2,INCLUDE_DIRECTORIES>
-  #)
+  target_include_directories(jxl_enc-obj PRIVATE
+    $<TARGET_PROPERTY:lcms2,INCLUDE_DIRECTORIES>
+  )
+  target_include_directories(jxl_dec-obj PRIVATE
+    $<TARGET_PROPERTY:lcms2,INCLUDE_DIRECTORIES>
+  )
 endif ()
 
 # Headers for exporting/importing public headers
@@ -443,11 +460,11 @@ set_target_properties(jxl PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
-# Public shared library.
-# TODO(lode): this library is missing symbols, more encoder-only code needs to
-# be moved to JPEGXL_INTERNAL_SOURCES_ENC before this works
-# Commented out: building libjxl_dec.dll out of this on Windows causes linker
-# errors due to this reason
+# # Public shared library.
+# # TODO(lode): this library is missing symbols, more encoder-only code needs to
+# # be moved to JPEGXL_INTERNAL_SOURCES_ENC before this works
+# # Commented out: building libjxl_dec.dll out of this on Windows causes linker
+# # errors due to this reason
 # add_library(jxl_dec SHARED $<TARGET_OBJECTS:jxl_dec-obj>)
 # target_link_libraries(jxl_dec PUBLIC ${JPEGXL_COVERAGE_FLAGS})
 # target_link_libraries(jxl_dec PRIVATE ${JPEGXL_INTERNAL_LIBS})
