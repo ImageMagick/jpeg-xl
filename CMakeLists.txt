@@ -289,4 +289,4 @@ add_subdirectory(plugins)
 endif ()
 
 # Binary tools
-add_subdirectory(tools)
+#add_subdirectory(tools)
