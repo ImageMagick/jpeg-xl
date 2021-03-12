@@ -135,9 +135,6 @@ class EnsurePaddingRowByRow {
       // There is already enough border around `src:src_rect`, nothing to do.
       *output = &src;
       *output_rect = src_rect;
-      // Calm down GCC compiler.
-      src_x_start_ = src_x_end_ = storage_x_start_ = 0;
-      strategy_ = kSkip;
     } else {
       *output = storage;
       *output_rect = Rect(xborder, -*y0, src_rect.xsize(), src_rect.ysize());
@@ -210,15 +207,15 @@ class EnsurePaddingRowByRow {
   size_t xpadding_;
   size_t ypadding_;
   size_t xborder_;
-  ssize_t src_x_start_;
-  ssize_t src_x_end_;
-  ssize_t storage_x_start_;
+  ssize_t src_x_start_ = 0;
+  ssize_t src_x_end_ = 0;
+  ssize_t storage_x_start_ = 0;
   const Image3F* src_;
   Rect src_rect_;
   Image3F* dst_;
   Rect dst_rect_;
   enum Strategy { kFast, kSlow, kSkip };
-  Strategy strategy_;
+  Strategy strategy_ = kSkip;
 };
 }  // namespace
 
