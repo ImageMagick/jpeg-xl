@@ -230,7 +230,6 @@ void DoColorSpaceTransform(ColorSpaceTransform* t, const size_t thread,
 // NOTE: this is only used to provide a reasonable ICC profile that other
 // software can read. Our own transforms use ExtraTF instead because that is
 // more precise and supports unbounded mode.
-#if JPEGXL_ENABLE_SKCMS
 std::vector<uint16_t> CreateTableCurve(uint32_t N, const ExtraTF tf) {
   JXL_ASSERT(N <= 4096);  // ICC MFT2 only allows 4K entries
   JXL_ASSERT(tf == ExtraTF::kPQ || tf == ExtraTF::kHLG);
@@ -250,29 +249,6 @@ std::vector<uint16_t> CreateTableCurve(uint32_t N, const ExtraTF tf) {
   }
   return table;
 }
-#else
-cmsToneCurve* CreateTableCurve(const cmsContext context, uint32_t N,
-                               const ExtraTF tf) {
-  JXL_ASSERT(N <= 4096);  // ICC MFT2 only allows 4K entries
-  JXL_ASSERT(tf == ExtraTF::kPQ || tf == ExtraTF::kHLG);
-  // No point using float - LCMS converts to 16-bit for A2B/MFT.
-  std::vector<uint16_t> table;
-  table.reserve(N);
-  for (uint32_t i = 0; i < N; ++i) {
-    const float x = static_cast<float>(i) / (N - 1);  // 1.0 at index N - 1.
-    const double dx = static_cast<double>(x);
-    // LCMS requires EOTF (e.g. 2.4 exponent).
-    double y = (tf == ExtraTF::kHLG) ? TF_HLG().DisplayFromEncoded(dx)
-                                     : TF_PQ().DisplayFromEncoded(dx);
-    JXL_ASSERT(y >= 0.0);
-    // Clamp to table range - necessary for HLG.
-    if (y > 1.0) y = 1.0;
-    // 1.0 corresponds to table value 0xFFFF.
-    table.push_back(static_cast<uint16_t>(std::round(y * 65535.0)));
-  }
-  return cmsBuildTabulatedToneCurve16(context, N, table.data());
-}
-#endif  // JPEGXL_ENABLE_SKCMS
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
@@ -304,15 +280,6 @@ static std::mutex& LcmsMutex() {
   return m;
 }
 
-#if JPEGXL_ENABLE_SKCMS
-JXL_MUST_USE_RESULT CIExy CIExyFromXYZ(const float XYZ[3]) {
-  const float factor = 1.f / (XYZ[0] + XYZ[1] + XYZ[2]);
-  CIExy xy;
-  xy.x = XYZ[0] * factor;
-  xy.y = XYZ[1] * factor;
-  return xy;
-}
-
 Status CIEXYZFromWhiteCIExy(const CIExy& xy, float XYZ[3]) {
   // Target Y = 1.
   if (std::abs(xy.y) < 1e-12) return JXL_FAILURE("Y value is too small");
@@ -322,6 +289,16 @@ Status CIEXYZFromWhiteCIExy(const CIExy& xy, float XYZ[3]) {
   XYZ[2] = (1 - xy.x - xy.y) * factor;
   return true;
 }
+
+#if JPEGXL_ENABLE_SKCMS
+JXL_MUST_USE_RESULT CIExy CIExyFromXYZ(const float XYZ[3]) {
+  const float factor = 1.f / (XYZ[0] + XYZ[1] + XYZ[2]);
+  CIExy xy;
+  xy.x = XYZ[0] * factor;
+  xy.y = XYZ[1] * factor;
+  return xy;
+}
+
 #else  // JPEGXL_ENABLE_SKCMS
 // (LCMS interface requires xyY but we omit the Y for white points/primaries.)
 
@@ -372,93 +349,7 @@ Status CreateProfileXYZ(const cmsContext context,
   return true;
 }
 
-// Multi-Localized Unicode string
-class MLU {
- public:
-  MLU(const cmsContext context, const char* ascii)
-      : mlu_(cmsMLUalloc(context, 0)) {
-    if (!cmsMLUsetASCII(mlu_, "en", "US", ascii)) {
-      JXL_NOTIFY_ERROR("Failed to set ASCII");
-    }
-  }
-  ~MLU() { cmsMLUfree(mlu_); }
 
-  MLU(const MLU&) = delete;
-  MLU& operator=(const MLU&) = delete;
-  MLU(MLU&&) = delete;
-  MLU& operator=(MLU&&) = delete;
-
-  cmsMLU* get() const { return mlu_; }
-
- private:
-  cmsMLU* mlu_;
-};
-
-// Sets header and required tags; called by EncodeProfile.
-Status SetTags(const cmsContext context, const Profile& profile,
-               const std::string& profile_description) {
-  cmsHPROFILE p = profile.get();
-
-  // Header
-  cmsSetHeaderFlags(p, 1);  // embedded
-
-  const MLU copyright(
-      context,
-      "Copyright 2018 Google LLC, CC-BY-SA 3.0 Unported license"
-      "(https://creativecommons.org/licenses/by-sa/3.0/legalcode)");
-  const MLU manufacturer(context, "Google");
-  const MLU model(context, "Image codec");
-  const MLU description(context, profile_description.c_str());
-
-  // Required tags
-  bool all_ok = true;
-  all_ok &= cmsWriteTag(p, cmsSigCopyrightTag, copyright.get());
-  all_ok &= cmsWriteTag(p, cmsSigDeviceMfgDescTag, manufacturer.get());
-  all_ok &= cmsWriteTag(p, cmsSigDeviceModelDescTag, model.get());
-  all_ok &= cmsWriteTag(p, cmsSigProfileDescriptionTag, description.get());
-
-  if (!all_ok) return JXL_FAILURE("Failed to write header/tags");
-  return true;
-}
-
-// Replacement for cmsMD5computeID, which re-encodes the profile and in so
-// doing changes the creator, resulting in different checksums than here.
-// See https://github.com/mm2/Little-CMS/issues/181. This implementation uses
-// newer LCMS features but the checksum matches displaycal's expectation.
-void ComputeProfileID(const cmsContext context, PaddedBytes icc,
-                      uint8_t id[16]) {
-#if !JXL_CMS_OLD_VERSION
-  cmsProfileID profile_id;
-  // Per http://www.color.org/specification/ICC1v43_2010-12.pdf section 7.2.18
-  JXL_ASSERT(icc.size() > 99);
-  memset(icc.data() + 44, 0, 4);   // Profile flags.
-  memset(icc.data() + 64, 0, 4);   // Rendering intent.
-  memset(icc.data() + 84, 0, 16);  // Profile ID.
-  cmsHANDLE md5_handle = cmsMD5alloc(context);
-  cmsMD5add(md5_handle, icc.data(), icc.size());
-  cmsMD5finish(&profile_id, md5_handle);
-  memcpy(id, profile_id.ID8, 16);
-#endif  // !JXL_CMS_OLD_VERSION
-}
-
-Status EncodeProfile(const cmsContext context, const Profile& profile,
-                     const std::string& description, PaddedBytes* icc) {
-  JXL_RETURN_IF_ERROR(SetTags(context, profile, description));
-
-  cmsUInt32Number size = 0;
-  if (!cmsSaveProfileToMem(profile.get(), nullptr, &size)) {
-    return JXL_FAILURE("Failed to get profile size");
-  }
-  JXL_ASSERT(size != 0);
-
-  icc->resize(size);
-  if (!cmsSaveProfileToMem(profile.get(), icc->data(), &size)) {
-    return JXL_FAILURE("Failed to encode profile");
-  }
-  JXL_ASSERT(size == icc->size());
-  ComputeProfileID(context, *icc, icc->data() + 84);
-  return true;
-}
 #endif  // !JPEGXL_ENABLE_SKCMS
 
 #if JPEGXL_ENABLE_SKCMS
@@ -470,7 +361,7 @@ Status DecodeProfile(const PaddedBytes& icc, skcms_ICCProfile* const profile) {
   }
   return true;
 }
-#else  // JPEGXL_ENABLE_SKCMS
+#else   // JPEGXL_ENABLE_SKCMS
 Status DecodeProfile(const cmsContext context, const PaddedBytes& icc,
                      Profile* profile) {
   profile->reset(cmsOpenProfileFromMemTHR(context, icc.data(), icc.size()));
@@ -485,29 +376,6 @@ Status DecodeProfile(const cmsContext context, const PaddedBytes& icc,
   return true;
 }
 #endif  // JPEGXL_ENABLE_SKCMS
-
-#if JPEGXL_ENABLE_SKCMS
-
-// NOTE: this is only used to provide a reasonable ICC profile that other
-// software can read. Our own transforms use ExtraTF instead because that is
-// more precise and supports unbounded mode.
-template <class Func>
-std::vector<uint16_t> CreateTableCurve(uint32_t N, const Func& func) {
-  JXL_ASSERT(N <= 4096);  // ICC MFT2 only allows 4K entries
-  // No point using float - LCMS converts to 16-bit for A2B/MFT.
-  std::vector<uint16_t> table(N);
-  for (uint32_t i = 0; i < N; ++i) {
-    const float x = static_cast<float>(i) / (N - 1);  // 1.0 at index N - 1.
-    // LCMS requires EOTF (e.g. 2.4 exponent).
-    double y = func.DisplayFromEncoded(static_cast<double>(x));
-    JXL_ASSERT(y >= 0.0);
-    // Clamp to table range - necessary for HLG.
-    if (y > 1.0) y = 1.0;
-    // 1.0 corresponds to table value 0xFFFF.
-    table[i] = static_cast<uint16_t>(std::round(y * 65535.0));
-  }
-  return table;
-}
 
 void ICCComputeMD5(const PaddedBytes& data, uint8_t sum[16]) {
   PaddedBytes data64 = data;
@@ -589,22 +457,92 @@ void ICCComputeMD5(const PaddedBytes& data, uint8_t sum[16]) {
   sum[15] = d0 >> 24u;
 }
 
+/* Chromatic adaptation matrices*/
+static float kBradford[9] = {
+    0.8951f, 0.2664f, -0.1614f, -0.7502f, 1.7135f,
+    0.0367f, 0.0389f, -0.0685f, 1.0296f,
+};
+
+static float kBradfordInv[9] = {
+    0.9869929f, -0.1470543f, 0.1599627f, 0.4323053f, 0.5183603f,
+    0.0492912f, -0.0085287f, 0.0400428f, 0.9684867f,
+};
+
+// Adapts whitepoint x, y to D50
+static Status AdaptToXYZD50(float wx, float wy, float matrix[9]) {
+  if (wx < 0 || wx > 1 || wy < 0 || wy > 1) {
+    return JXL_FAILURE("xy color out of range");
+  }
+
+  float w[3] = {wx / wy, 1.0f, (1.0f - wx - wy) / wy};
+  float w50[3] = {0.96422f, 1.0f, 0.82521f};
+
+  float lms[3];
+  float lms50[3];
+
+  MatMul(kBradford, w, 3, 3, 1, lms);
+  MatMul(kBradford, w50, 3, 3, 1, lms50);
+
+  float a[9] = {
+      lms50[0] / lms[0], 0, 0, 0, lms50[1] / lms[1], 0, 0, 0, lms50[2] / lms[2],
+  };
+
+  float b[9];
+  MatMul(a, kBradford, 3, 3, 3, b);
+  MatMul(kBradfordInv, b, 3, 3, 3, matrix);
+
+  return true;
+}
+
+static Status PrimariesToXYZD50(float rx, float ry, float gx, float gy,
+                                float bx, float by, float wx, float wy,
+                                float matrix[9]) {
+  if (rx < 0 || rx > 1 || ry < 0 || ry > 1 || gx < 0 || gx > 1 || gy < 0 ||
+      gy > 1 || bx < 0 || bx > 1 || by < 0 || by > 1 || wx < 0 || wx > 1 ||
+      wy < 0 || wy > 1) {
+    return JXL_FAILURE("xy color out of range");
+  }
+
+  float primaries[9] = {
+      rx, gx, bx, ry, gy, by, 1.0f - rx - ry, 1.0f - gx - gy, 1.0f - bx - by};
+  float primaries_inv[9];
+  memcpy(primaries_inv, primaries, sizeof(float) * 9);
+  Inv3x3Matrix(primaries_inv);
+
+  float w[3] = {wx / wy, 1.0f, (1.0f - wx - wy) / wy};
+  float xyz[3];
+  MatMul(primaries_inv, w, 3, 3, 1, xyz);
+
+  float a[9] = {
+      xyz[0], 0, 0, 0, xyz[1], 0, 0, 0, xyz[2],
+  };
+
+  float toXYZ[9];
+  MatMul(primaries, a, 3, 3, 3, toXYZ);
+
+  float d50[9];
+  JXL_RETURN_IF_ERROR(AdaptToXYZD50(wx, wy, d50));
+
+  MatMul(d50, toXYZ, 3, 3, 3, matrix);
+  return true;
+}
+
 Status CreateICCChadMatrix(CIExy w, float result[9]) {
-  skcms_Matrix3x3 m;
+  float m[9];
   if (w.y == 0) {  // WhitePoint can not be pitch-black.
     return JXL_FAILURE("Invalid WhitePoint");
   }
-  JXL_RETURN_IF_ERROR(skcms_AdaptToXYZD50(w.x, w.y, &m));
-  memcpy(result, m.vals, sizeof(float) * 9);
+  JXL_RETURN_IF_ERROR(AdaptToXYZD50(w.x, w.y, m));
+  memcpy(result, m, sizeof(float) * 9);
   return true;
 }
 
 // Creates RGB to XYZ matrix given RGB primaries and whitepoint in xy.
 Status CreateICCRGBMatrix(CIExy r, CIExy g, CIExy b, CIExy w, float result[9]) {
-  skcms_Matrix3x3 m;
+  float m[9];
   JXL_RETURN_IF_ERROR(
-      skcms_PrimariesToXYZD50(r.x, r.y, g.x, g.y, b.x, b.y, w.x, w.y, &m));
-  memcpy(result, m.vals, sizeof(float) * 9);
+      PrimariesToXYZD50(r.x, r.y, g.x, g.y, b.x, b.y, w.x, w.y, m));
+  memcpy(result, m, sizeof(float) * 9);
   return true;
 }
 
@@ -917,112 +855,6 @@ Status MaybeCreateProfile(const ColorEncoding& c,
   return true;
 }
 
-Status MaybeCreateProfile(const ColorEncoding& c, skcms_ICCProfile* profile,
-                          PaddedBytes* bytes) {
-  if (c.GetColorSpace() == ColorSpace::kUnknown || c.tf.IsUnknown()) {
-    return false;  // Not an error
-  }
-
-  JXL_RETURN_IF_ERROR(MaybeCreateProfile(c, bytes));
-  JXL_RETURN_IF_ERROR(skcms_Parse(bytes->data(), bytes->size(), profile));
-
-  return true;
-}
-
-#else  // JPEGXL_ENABLE_SKCMS
-
-Curve CreateCurve(const cmsContext context, const ColorEncoding& c) {
-  // Exponential with linear part. Note that the LittleCMS API reference and
-  // tutorial disagree on the type number.
-  const cmsUInt32Number type = 4;
-  // First is EOTF exponent as expected by LCMS (c.GetGamma is the OETF, so take
-  // the reciprocal). Then a,b,c,d: (a*x + b)^gamma, or c*x if x < d.
-  std::array<cmsFloat64Number, 5> params;
-
-  if (c.tf.IsGamma()) {
-    params = {1.0 / c.tf.GetGamma(), 1.0, 0.0, 1.0, 0.0};
-    return Curve(cmsBuildParametricToneCurve(context, type, params.data()));
-  }
-  switch (c.tf.GetTransferFunction()) {
-    case TransferFunction::kHLG:
-      return Curve(
-          HWY_DYNAMIC_DISPATCH(CreateTableCurve)(context, 4096, ExtraTF::kHLG));
-    case TransferFunction::kPQ:
-      return Curve(
-          HWY_DYNAMIC_DISPATCH(CreateTableCurve)(context, 4096, ExtraTF::kPQ));
-
-    case TransferFunction::kSRGB:
-      params = {2.4, 1.0 / 1.055, 0.055 / 1.055, 1.0 / 12.92, 0.04045};
-      break;
-    case TransferFunction::k709:
-      params = {1.0 / 0.45, 1.0 / 1.099, 0.099 / 1.099, 1.0 / 4.5, 0.081};
-      break;
-    case TransferFunction::kLinear:
-      params = {1.0, 1.0, 0.0, 1.0, 0.0};
-      break;
-    case TransferFunction::kDCI:
-      params = {2.6, 1.0, 0.0, 1.0, 0.0};
-      break;
-    default:
-      JXL_ABORT("Invalid TF %d", c.tf.GetTransferFunction());
-  }
-  // WARNING: using cmsBuildGamma results in a bounded curve - LittleCMS
-  // clamps negative outputs to zero. To retain unbounded mode, we use the
-  // same parametric curve type as sRGB.
-  return Curve(cmsBuildParametricToneCurve(context, type, params.data()));
-}
-
-Profile MaybeCreateProfileRGB(const cmsContext context, const ColorEncoding& c,
-                              const cmsCIExyY& wp_xyY, const Curve& curve) {
-  const PrimariesCIExy primaries = c.GetPrimaries();
-  const cmsCIExyYTRIPLE primaries_xyY = {xyYFromCIExy(primaries.r),
-                                         xyYFromCIExy(primaries.g),
-                                         xyYFromCIExy(primaries.b)};
-  cmsToneCurve* curves[3] = {curve.get(), curve.get(), curve.get()};
-  return Profile(
-      cmsCreateRGBProfileTHR(context, &wp_xyY, &primaries_xyY, curves));
-}
-
-// Serializes the profile before use to ensure all values are quantized.
-Status MaybeCreateProfile(const cmsContext context, const ColorEncoding& c,
-                          PaddedBytes* JXL_RESTRICT icc) {
-  if (c.GetColorSpace() == ColorSpace::kUnknown || c.tf.IsUnknown()) {
-    return false;  // Not an error
-  }
-
-  // (If color_space == kRGB, we'll use this curve for all channels.)
-  const Curve curve = CreateCurve(context, c);
-  if (curve == nullptr) return JXL_FAILURE("Failed to create curve");
-
-  const cmsCIExyY wp_xyY = xyYFromCIExy(c.GetWhitePoint());
-
-  Profile profile;
-  switch (c.GetColorSpace()) {
-    case ColorSpace::kRGB:
-      profile = MaybeCreateProfileRGB(context, c, wp_xyY, curve);
-      break;
-    case ColorSpace::kGray:
-      profile.reset(cmsCreateGrayProfileTHR(context, &wp_xyY, curve.get()));
-      break;
-    case ColorSpace::kXYB:
-      JXL_NOTIFY_ERROR("XYB ICC not yet implemented");
-      break;
-    default:
-      return JXL_FAILURE("Unknown CS %u", (uint32_t) c.GetColorSpace());
-  }
-  if (profile.get() == nullptr) {
-    return JXL_FAILURE("Failed to create profile (cs = %u)", (uint32_t) c.GetColorSpace());
-  }
-
-  // ICC uses the same values.
-  cmsSetHeaderRenderingIntent(profile.get(),
-                              static_cast<cmsUInt32Number>(c.rendering_intent));
-
-  return EncodeProfile(context, profile, Description(c), icc);
-}
-
-#endif  // JPEGXL_ENABLE_SKCMS
-
 #if JPEGXL_ENABLE_SKCMS
 
 ColorSpace ColorSpaceFromProfile(const skcms_ICCProfile& profile) {
@@ -1138,7 +970,7 @@ void DetectTransferFunction(const skcms_ICCProfile& profile,
 
     skcms_ICCProfile profile_test;
     PaddedBytes bytes;
-    if (MaybeCreateProfile(*c, &profile_test, &bytes) &&
+    if (MaybeCreateProfile(*c, &bytes) && DecodeProfile(bytes, &profile_test) &&
         skcms_ApproximatelyEqualProfiles(&profile, &profile_test)) {
       return;
     }
@@ -1301,7 +1133,7 @@ void DetectTransferFunction(const cmsContext context, const Profile& profile,
     c->tf.SetTransferFunction(tf);
 
     PaddedBytes icc_test;
-    if (MaybeCreateProfile(context, *c, &icc_test) &&
+    if (MaybeCreateProfile(*c, &icc_test) &&
         ProfileEquivalentToICC(context, profile, icc_test, *c)) {
       return;
     }
@@ -1404,13 +1236,7 @@ Status ColorEncoding::SetFieldsFromICC() {
 Status ColorEncoding::CreateICC() {
   std::lock_guard<std::mutex> guard(LcmsMutex());
   InternalRemoveICC();
-
-#if JPEGXL_ENABLE_SKCMS
   if (!MaybeCreateProfile(*this, &icc_)) {
-#else   // JPEGXL_ENABLE_SKCMS
-  const cmsContext context = GetContext();
-  if (!MaybeCreateProfile(context, *this, &icc_)) {
-#endif  // JPEGXL_ENABLE_SKCMS
     return JXL_FAILURE("Failed to create profile from fields");
   }
   return true;
@@ -1428,7 +1254,7 @@ void ColorEncoding::DecideIfWantICC() {
   const cmsContext context = GetContext();
   Profile profile;
   if (!DecodeProfile(context, ICC(), &profile)) return;
-  if (!MaybeCreateProfile(context, *this, &icc_new)) return;
+  if (!MaybeCreateProfile(*this, &icc_new)) return;
   equivalent = ProfileEquivalentToICC(context, profile, icc_new, *this);
 #endif  // JPEGXL_ENABLE_SKCMS
 
@@ -1499,16 +1325,15 @@ Status ColorSpaceTransform::Init(const ColorEncoding& c_src,
     PaddedBytes icc_src, icc_dst;
 #if JPEGXL_ENABLE_SKCMS
     skcms_ICCProfile new_src, new_dst;
-#else  // JPEGXL_ENABLE_SKCMS
+#else   // JPEGXL_ENABLE_SKCMS
     Profile new_src, new_dst;
 #endif  // JPEGXL_ENABLE_SKCMS
         // Only enable ExtraTF if profile creation succeeded.
+    if (MaybeCreateProfile(c_linear_src, &icc_src) &&
+        MaybeCreateProfile(c_linear_dst, &icc_dst) &&
 #if JPEGXL_ENABLE_SKCMS
-    if (MaybeCreateProfile(c_linear_src, &new_src, &icc_src) &&
-        MaybeCreateProfile(c_linear_dst, &new_dst, &icc_dst)) {
+        DecodeProfile(icc_src, &new_src) && DecodeProfile(icc_dst, &new_dst)) {
 #else   // JPEGXL_ENABLE_SKCMS
-    if (MaybeCreateProfile(context, c_linear_src, &icc_src) &&
-        MaybeCreateProfile(context, c_linear_dst, &icc_dst) &&
         DecodeProfile(context, icc_src, &new_src) &&
         DecodeProfile(context, icc_dst, &new_dst)) {
 #endif  // JPEGXL_ENABLE_SKCMS

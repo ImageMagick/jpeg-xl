@@ -183,6 +183,12 @@ add_definitions(
   -D__TIME__="redacted"
 )
 
+if("${JPEGXL_ENABLE_FUZZERS}" OR "${JPEGXL_ENABLE_COVERAGE}")
+  add_definitions(
+    -DJXL_ENABLE_FUZZERS
+  )
+endif()  # JPEGXL_ENABLE_FUZZERS
+
 # In CMake before 3.12 it is problematic to pass repeated flags like -Xclang.
 # For this reason we place them in CMAKE_CXX_FLAGS instead.
 # See https://gitlab.kitware.com/cmake/cmake/issues/15826
@@ -278,6 +284,35 @@ add_custom_target(doc false
   COMMENT "Error: Can't generate doc since Doxygen not installed.")
 endif() # DOXYGEN_FOUND
 
+find_package(Python COMPONENTS Interpreter)
+if(Python_Interpreter_FOUND)
+  find_program(ASCIIDOC a2x)
+endif()
+if(NOT Python_Interpreter_FOUND OR "${ASCIIDOC}" STREQUAL "ASCIIDOC-NOTFOUND")
+  message(WARNING "asciidoc was not found, the man pages will not be installed.")
+else()
+  # Invoking the Python interpreter ourselves instead of running the a2x binary
+  # directly is necessary on MSYS2, otherwise it is run through cmd.exe which
+  # does not recognize it.
+  add_custom_command(
+    OUTPUT cjxl.1
+    COMMAND Python::Interpreter
+    ARGS "${ASCIIDOC}"
+      --format manpage --destination-dir="${CMAKE_CURRENT_BINARY_DIR}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/doc/man/cjxl.txt"
+    MAIN_DEPENDENCY "${CMAKE_CURRENT_SOURCE_DIR}/doc/man/cjxl.txt")
+  add_custom_command(
+    OUTPUT djxl.1
+    COMMAND Python::Interpreter
+    ARGS "${ASCIIDOC}"
+      --format manpage --destination-dir="${CMAKE_CURRENT_BINARY_DIR}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/doc/man/djxl.txt"
+    MAIN_DEPENDENCY "${CMAKE_CURRENT_SOURCE_DIR}/doc/man/djxl.txt")
+  add_custom_target(manpages ALL DEPENDS cjxl.1 djxl.1)
+  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/cjxl.1" DESTINATION share/man/man1)
+  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/djxl.1" DESTINATION share/man/man1)
+endif()
+
 # Example usage code.
 if (${JPEGXL_ENABLE_EXAMPLES})
 add_subdirectory(examples)
@@ -289,4 +324,4 @@ add_subdirectory(plugins)
 endif ()
 
 # Binary tools
-#add_subdirectory(tools)
+add_subdirectory(tools)

@@ -24,6 +24,7 @@
 #include "lib/jxl/coeff_order.h"
 #include "lib/jxl/common.h"
 #include "lib/jxl/convolve.h"
+#include "lib/jxl/dec_group_border.h"
 #include "lib/jxl/dec_noise.h"
 #include "lib/jxl/dec_upsample.h"
 #include "lib/jxl/filters.h"
@@ -66,6 +67,25 @@ struct PassesDecoderState {
   // Decoded image.
   Image3F decoded;
 
+  // Borders between groups. Only allocated if `decoded` is *not* allocated.
+  // We also store the extremal borders for simplicity. Horizontal borders are
+  // stored in an image as wide as the main frame, in top-to-bottom order (top
+  // border of a group first, followed by the bottom border, followed by top
+  // border of the next group). Vertical borders are similarly stored.
+  Image3F borders_horizontal;
+  Image3F borders_vertical;
+
+  // RGB8 output buffer. If not nullptr, image data will be written to this
+  // buffer instead of being written to the output ImageBundle. The image data
+  // is assumed to be contiguous, hence row `i` starts at position `image_xsize
+  // * i * 3`.
+  uint8_t* rgb_output;
+  // Whether to use int16 float-XYB-to-uint8-srgb conversion.
+  bool fast_xyb_srgb8_conversion;
+
+  // If true, rgb_output is RGBA using 4 instead of 3 bytes per pixel.
+  bool rgb_output_is_rgba;
+
   // Seed for noise, to have different noise per-frame.
   size_t noise_seed = 0;
 
@@ -83,7 +103,13 @@ struct PassesDecoderState {
   // but are read-only for the filter application.
   FilterWeights filter_weights;
 
-  static constexpr size_t kMaxFinalizeRectPadding = 9;
+  // Manages the status of borders.
+  GroupBorderAssigner group_border_assigner;
+
+  bool EagerFinalizeImageRect() const {
+    return shared->frame_header.chroma_subsampling.Is444() &&
+           shared->frame_header.encoding == FrameEncoding::kVarDCT;
+  }
 
   // Amount of padding that will be accessed, in all directions, outside a rect
   // during a call to FinalizeImageRect().
@@ -96,9 +122,19 @@ struct PassesDecoderState {
   }
 
   // Storage for intermediate data during FinalizeRect steps.
+  // TODO(veluca): these buffers are larger than strictly necessary.
   std::vector<Image3F> filter_input_storage;
   std::vector<Image3F> padded_upsampling_input_storage;
   std::vector<Image3F> upsampling_input_storage;
+  // We keep four arrays, one per upsampling level, to reduce memory usage in
+  // the common case of no upsampling.
+  std::vector<Image3F> output_pixel_data_storage[4] = {};
+
+  // Buffer for decoded pixel data for a group.
+  std::vector<Image3F> group_data;
+  static constexpr size_t kGroupDataYBorder = kMaxFinalizeRectPadding * 2;
+  static constexpr size_t kGroupDataXBorder =
+      RoundUpToBlockDim(kMaxFinalizeRectPadding) * 2 + kBlockDim;
 
   void EnsureStorage(size_t num_threads) {
     // We need one filter_storage per thread, ensure we have at least that many.
@@ -114,18 +150,36 @@ struct PassesDecoderState {
       // Extra padding along the x dimension to ensure memory accesses don't
       // load out-of-bounds pixels.
       filter_input_storage.emplace_back(
-          kGroupDim +
-              2 * DivCeil(kMaxFinalizeRectPadding, kBlockDim) * kBlockDim,
-          kGroupDim + 2 * kMaxFinalizeRectPadding);
+          kApplyImageFeaturesTileDim + 2 * kGroupDataXBorder,
+          kApplyImageFeaturesTileDim + 2 * kGroupDataYBorder);
     }
     if (shared->frame_header.upsampling != 1) {
       for (size_t _ = upsampling_input_storage.size(); _ < num_threads; _++) {
         // At this point, we only need up to 2 pixels of border per side for
         // upsampling, but we add an extra border for aligned access.
-        upsampling_input_storage.emplace_back(kGroupDim + 2 * kBlockDim,
-                                              kGroupDim + 4);
-        padded_upsampling_input_storage.emplace_back(kGroupDim + 2 * kBlockDim,
-                                                     kGroupDim + 4);
+        upsampling_input_storage.emplace_back(
+            kApplyImageFeaturesTileDim + 2 * kBlockDim,
+            kApplyImageFeaturesTileDim + 4);
+        padded_upsampling_input_storage.emplace_back(
+            kApplyImageFeaturesTileDim + 2 * kBlockDim,
+            kApplyImageFeaturesTileDim + 4);
+      }
+    }
+    for (size_t _ = group_data.size(); _ < num_threads; _++) {
+      group_data.emplace_back(kGroupDim + 2 * kGroupDataXBorder,
+                              kGroupDim + 2 * kGroupDataYBorder);
+#if MEMORY_SANITIZER
+      // Avoid errors due to loading vectors on the outermost padding.
+      ZeroFillImage(&group_data.back());
+#endif
+    }
+    if (rgb_output) {
+      size_t log2_upsampling = CeilLog2Nonzero(shared->frame_header.upsampling);
+      for (size_t _ = output_pixel_data_storage[log2_upsampling].size();
+           _ < num_threads; _++) {
+        output_pixel_data_storage[log2_upsampling].emplace_back(
+            kApplyImageFeaturesTileDim << log2_upsampling,
+            kApplyImageFeaturesTileDim << log2_upsampling);
       }
     }
   }
@@ -134,7 +188,7 @@ struct PassesDecoderState {
   ColorEncoding output_encoding;
 
   // Initializes decoder-specific structures using information from *shared.
-  void Init(ThreadPool* pool) {
+  void Init() {
     x_dm_multiplier =
         std::pow(1 / (1.25f), shared->frame_header.x_qm_scale - 2.0f);
     b_dm_multiplier =
@@ -145,6 +199,9 @@ struct PassesDecoderState {
             ? ColorEncoding::LinearSRGB(
                   shared->metadata->m.color_encoding.IsGray())
             : shared->metadata->m.color_encoding;
+    rgb_output = nullptr;
+    rgb_output_is_rgba = false;
+    fast_xyb_srgb8_conversion = false;
     // TODO(veluca): keep in sync with dec_reconstruct.cc.
     if (shared->metadata->m.xyb_encoded &&
         shared->frame_header.needs_color_transform() &&
@@ -153,6 +210,30 @@ struct PassesDecoderState {
     }
     used_acs = 0;
 
+    group_border_assigner.Init(shared->frame_dim);
+    const LoopFilter& lf = shared->frame_header.loop_filter;
+    filter_weights.Init(lf, shared->frame_dim);
+    for (auto& fp : filter_pipelines) {
+      // De-initialize FilterPipelines.
+      fp.num_filters = 0;
+    }
+  }
+
+  // Initialize the decoder state after all of DC is decoded.
+  void InitForAC(ThreadPool* pool) {
+    shared_storage.coeff_order_size = 0;
+    for (uint8_t o = 0; o < AcStrategy::kNumValidStrategies; ++o) {
+      if (((1 << o) & used_acs) == 0) continue;
+      uint8_t ord = kStrategyOrder[o];
+      shared_storage.coeff_order_size =
+          std::max(kCoeffOrderOffset[3 * (ord + 1)] * kDCTBlockSize,
+                   shared_storage.coeff_order_size);
+    }
+    size_t sz = shared_storage.frame_header.passes.num_passes *
+                shared_storage.coeff_order_size;
+    if (sz > shared_storage.coeff_orders.size()) {
+      shared_storage.coeff_orders.resize(sz);
+    }
     if (shared->frame_header.flags & FrameHeader::kNoise) {
       noise = Image3F(shared->frame_dim.xsize_upsampled_padded,
                       shared->frame_dim.ysize_upsampled_padded);
@@ -184,38 +265,34 @@ struct PassesDecoderState {
         noise_seed += shared->frame_dim.num_groups;
       }
     }
-
-    // decoded must be padded to a multiple of kBlockDim rows since the last
-    // rows may be used by the filters even if they are outside the frame
-    // dimension.
-    decoded =
-        Image3F(shared->frame_dim.xsize_padded, shared->frame_dim.ysize_padded);
+    EnsureBordersStorage();
+    if (!EagerFinalizeImageRect()) {
+      // decoded must be padded to a multiple of kBlockDim rows since the last
+      // rows may be used by the filters even if they are outside the frame
+      // dimension.
+      decoded = Image3F(shared->frame_dim.xsize_padded,
+                        shared->frame_dim.ysize_padded);
+    }
 #if MEMORY_SANITIZER
     // Avoid errors due to loading vectors on the outermost padding.
     ZeroFillImage(&decoded);
 #endif
-    const LoopFilter& lf = shared->frame_header.loop_filter;
-    filter_weights.Init(lf, shared->frame_dim);
-    for (auto& fp : filter_pipelines) {
-      // De-initialize FilterPipelines.
-      fp.num_filters = 0;
-    }
   }
 
-  // Initialize the decoder state after all of DC is decoded.
-  void InitForAC() {
-    shared_storage.coeff_order_size = 0;
-    for (uint8_t o = 0; o < AcStrategy::kNumValidStrategies; ++o) {
-      if (((1 << o) & used_acs) == 0) continue;
-      uint8_t ord = kStrategyOrder[o];
-      shared_storage.coeff_order_size =
-          std::max(kCoeffOrderOffset[3 * (ord + 1)] * kDCTBlockSize,
-                   shared_storage.coeff_order_size);
+  void EnsureBordersStorage() {
+    if (!EagerFinalizeImageRect()) return;
+    size_t padding = FinalizeRectPadding();
+    size_t bordery = 2 * padding;
+    size_t borderx = padding + group_border_assigner.PaddingX(padding);
+    Rect horizontal = Rect(0, 0, shared->frame_dim.xsize_padded,
+                           bordery * shared->frame_dim.ysize_groups * 2);
+    if (!SameSize(horizontal, borders_horizontal)) {
+      borders_horizontal = Image3F(horizontal.xsize(), horizontal.ysize());
     }
-    size_t sz = shared_storage.frame_header.passes.num_passes *
-                shared_storage.coeff_order_size;
-    if (sz > shared_storage.coeff_orders.size()) {
-      shared_storage.coeff_orders.resize(sz);
+    Rect vertical = Rect(0, 0, borderx * shared->frame_dim.xsize_groups * 2,
+                         shared->frame_dim.ysize_padded);
+    if (!SameSize(vertical, borders_vertical)) {
+      borders_vertical = Image3F(vertical.xsize(), vertical.ysize());
     }
   }
 };

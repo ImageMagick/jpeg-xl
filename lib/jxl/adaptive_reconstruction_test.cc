@@ -143,7 +143,8 @@ void EnsureUnchanged(const float background, const float foreground,
   jxl::PassesDecoderState state;
   JXL_CHECK(
       jxl::InitializePassesSharedState(frame_header, &state.shared_storage));
-  state.Init(/*pool=*/nullptr);
+  state.Init();
+  state.InitForAC(/*pool=*/nullptr);
 
   state.filter_weights.Init(lf, frame_dim);
   FillImage(-0.5f, &state.filter_weights.sigma);
@@ -156,10 +157,10 @@ void EnsureUnchanged(const float background, const float foreground,
     out.SetFromImage(CopyImage(in), ColorEncoding::LinearSRGB());
     FillImage(-99.f, out.color());  // Initialized with garbage.
     Image3F padded = PadImageMirror(in, 2 * kBlockDim, 0);
-    // Call with `rerender` set to true to force to apply filters to all of the
+    // Call with `force_fir` set to true to force to apply filters to all of the
     // input image.
     JXL_CHECK(FinalizeFrameDecoding(&out, &state, /*pool=*/nullptr,
-                                    /*rerender=*/true,
+                                    /*force_fir=*/true,
                                     /*skip_blending=*/true));
 
     VerifyRelativeError(in, *out.color(), 1E-3, 1E-4);

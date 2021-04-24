@@ -351,7 +351,7 @@ build:armhf:clang:release:
     - web
   script:
     - BUILD_TARGET=arm-linux-gnueabihf
-        CMAKE_CXX_FLAGS="-DJXL_DISABLE_SLOW_TESTS" SKIP_TEST=1 PACK_TEST=1
+        CMAKE_CXX_FLAGS="-DJXL_DISABLE_SLOW_TESTS -march=armv7a -Wno-unused-command-line-argument" SKIP_TEST=1 PACK_TEST=1
         STACK_SIZE=1
         ./ci.sh release
     - tools/build_stats.py --save build/stats.json
@@ -518,6 +518,9 @@ test:fast_benchmark.msan:
   script:
     - STORE_IMAGES=0 ./ci.sh fast_benchmark
 
+# The aarch64 benchmarks are temporarily disabled until we can run them again.
+# TODO(sboukortt): Have them run again.
+
 # This template runs on actual aarch64 hardware.
 .benchmark_aarch64_template: &benchmark_aarch64_template
   <<: *linux_host_template
@@ -534,6 +537,8 @@ test:fast_benchmark.msan:
 
 test:aarch64:fast_benchmark:release:
   <<: *benchmark_aarch64_template
+  only: # TODO(sboukortt): Remove this.
+    - web
   dependencies:
     - build:aarch64:clang:release
   script:
@@ -548,7 +553,8 @@ test:aarch64:arm_benchmark:release:
   <<: *benchmark_aarch64_template
   only:
     - web
-    - master
+    # TODO(sboukortt): Uncommment this.
+    # - master
   dependencies:
     - build:aarch64:clang:release
   script:

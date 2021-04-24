@@ -84,41 +84,6 @@ uint32_t JxlEncoderVersion(void) {
          JPEGXL_PATCH_VERSION;
 }
 
-constexpr unsigned char container_header[] = {
-    0,   0,   0, 0xc, 'J',  'X', 'L', ' ', 0xd, 0xa, 0x87,
-    0xa, 0,   0, 0,   0x14, 'f', 't', 'y', 'p', 'j', 'x',
-    'l', ' ', 0, 0,   0,    0,   'j', 'x', 'l', ' '};
-
-namespace {
-// Extends vec with size, and returns a pointer to the beginning of the
-// extension.
-uint8_t* ExtendVector(std::vector<uint8_t>* vec, size_t size) {
-  vec->resize(vec->size() + size, 0);
-  return vec->data() + vec->size() - size;
-}
-}  // namespace
-
-void JxlEncoderStruct::AppendBoxHeader(const jxl::BoxType& type, size_t size,
-                                       bool unbounded) {
-  uint64_t box_size = 0;
-  bool large_size = false;
-  if (!unbounded) {
-    box_size = size + 8;
-    if (box_size >= 0x100000000ull) {
-      large_size = true;
-    }
-  }
-
-  StoreBE32(large_size ? 1 : box_size, ExtendVector(&output_byte_queue, 4));
-
-  output_byte_queue.insert(output_byte_queue.end(), type.data(),
-                           type.data() + 4);
-
-  if (large_size) {
-    StoreBE64(box_size, ExtendVector(&output_byte_queue, 8));
-  }
-}
-
 JxlEncoderStatus JxlEncoderStruct::RefillOutputByteQueue() {
   jxl::MemoryManagerUniquePtr<jxl::JxlEncoderQueuedFrame> input_frame =
       std::move(input_frame_queue[0]);
@@ -128,14 +93,17 @@ JxlEncoderStatus JxlEncoderStruct::RefillOutputByteQueue() {
 
   if (!wrote_headers) {
     if (use_container) {
-      output_byte_queue.insert(output_byte_queue.end(), container_header,
-                               container_header + sizeof(container_header));
+      output_byte_queue.insert(
+          output_byte_queue.end(), jxl::kContainerHeader,
+          jxl::kContainerHeader + sizeof(jxl::kContainerHeader));
       if (store_jpeg_metadata && jpeg_metadata.size() > 0) {
-        AppendBoxHeader(jxl::MakeBoxType("jbrd"), jpeg_metadata.size(), false);
+        jxl::AppendBoxHeader(jxl::MakeBoxType("jbrd"), jpeg_metadata.size(),
+                             false, &output_byte_queue);
         output_byte_queue.insert(output_byte_queue.end(), jpeg_metadata.begin(),
                                  jpeg_metadata.end());
       }
-      AppendBoxHeader(jxl::MakeBoxType("jxlc"), 0, true);
+      jxl::AppendBoxHeader(jxl::MakeBoxType("jxlc"), 0, true,
+                           &output_byte_queue);
     }
     if (!WriteHeaders(&metadata, &writer, nullptr)) {
       return JXL_ENC_ERROR;
@@ -456,14 +424,23 @@ JxlEncoderStatus JxlEncoderProcessOutput(JxlEncoder* enc, uint8_t** next_out,
   return JXL_ENC_SUCCESS;
 }
 
-JXL_EXPORT void JxlColorEncodingSetToSRGB(JxlColorEncoding* color_encoding,
-                                          JXL_BOOL is_gray) {
+JxlEncoderStatus JxlEncoderOptionsSetDecodingSpeed(JxlEncoderOptions* options,
+                                                   int tier) {
+  if (tier < 0 || tier > 4) {
+    return JXL_ENC_ERROR;
+  }
+  options->values.cparams.decoding_speed_tier = tier;
+  return JXL_ENC_SUCCESS;
+}
+
+void JxlColorEncodingSetToSRGB(JxlColorEncoding* color_encoding,
+                               JXL_BOOL is_gray) {
   ConvertInternalToExternalColorEncoding(jxl::ColorEncoding::SRGB(is_gray),
                                          color_encoding);
 }
 
-JXL_EXPORT void JxlColorEncodingSetToLinearSRGB(
-    JxlColorEncoding* color_encoding, JXL_BOOL is_gray) {
+void JxlColorEncodingSetToLinearSRGB(JxlColorEncoding* color_encoding,
+                                     JXL_BOOL is_gray) {
   ConvertInternalToExternalColorEncoding(
       jxl::ColorEncoding::LinearSRGB(is_gray), color_encoding);
 }

@@ -126,6 +126,7 @@ if(${JPEGXL_ENABLE_DEVTOOLS})
     epf_main
     ssimulacra_main
     xyb_range
+    jxl_from_tree
   )
 
   add_executable(fuzzer_corpus fuzzer_corpus.cc)
@@ -136,6 +137,7 @@ if(${JPEGXL_ENABLE_DEVTOOLS})
   add_executable(decode_and_encode decode_and_encode.cc)
   add_executable(epf_main epf_main.cc epf.cc epf.h)
   add_executable(xyb_range xyb_range.cc)
+  add_executable(jxl_from_tree jxl_from_tree.cc)
 endif()  # JPEGXL_ENABLE_DEVTOOLS
 
 # Benchmark tools.
@@ -224,17 +226,18 @@ foreach(BINARY IN LISTS TOOL_BINARIES)
 endforeach()
 install(TARGETS ${TOOL_BINARIES} RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 
+set(FUZZER_BINARIES
+  color_encoding_fuzzer
+  decode_basic_info_fuzzer
+  djxl_fuzzer
+  icc_codec_fuzzer
+  fields_fuzzer
+  rans_fuzzer
+  set_from_bytes_fuzzer
+)
+
 # Fuzzers.
 if(${JPEGXL_ENABLE_FUZZERS})
-  set(FUZZER_BINARIES
-    color_encoding_fuzzer
-    decode_basic_info_fuzzer
-    djxl_fuzzer
-    icc_codec_fuzzer
-    fields_fuzzer
-    rans_fuzzer
-    set_from_bytes_fuzzer
-  )
   foreach(BINARY IN LISTS FUZZER_BINARIES)
     add_executable("${BINARY}" "${BINARY}.cc")
     target_include_directories("${BINARY}" PRIVATE "${CMAKE_SOURCE_DIR}")
@@ -243,6 +246,16 @@ if(${JPEGXL_ENABLE_FUZZERS})
     target_link_libraries("${BINARY}" -fsanitize=fuzzer)
   endforeach()
 endif()  # JPEGXL_ENABLE_FUZZERS
+
+# For coverage we want a lightweight alternative for regular fuzzers.
+if(${JPEGXL_ENABLE_COVERAGE})
+  foreach(FUZZER IN LISTS FUZZER_BINARIES)
+    set(BINARY "${FUZZER}_runner")
+    add_executable("${BINARY}" "fuzzer_stub.cc" "${FUZZER}.cc")
+    target_include_directories("${BINARY}" PRIVATE "${CMAKE_SOURCE_DIR}")
+    target_link_libraries("${BINARY}" jxl-static jxl_extras-static jxl_threads-static jxl_tool)
+  endforeach()
+endif()  # JPEGXL_ENABLE_COVERAGE
 
 # EMSCRIPTEN doesn't support dynamic libraries so testing for linkage there
 # doesn't make much sense.
@@ -293,11 +306,11 @@ set_target_properties(jxl_emcc PROPERTIES LINK_FLAGS "\
   -s MODULARIZE=1 \
   -s FILESYSTEM=0 \
   -s EXPORT_NAME=\"JxlCodecModule\"\
-  -s EXPORTED_FUNCTIONS='[\
-    \"_jxlCompress\",\
-    \"_jxlDecompress\",\
-    \"_free\",\
-    \"_malloc\"\
-  ]'\
+  -s \"EXPORTED_FUNCTIONS=[\
+    _jxlCompress,\
+    _jxlDecompress,\
+    _free,\
+    _malloc\
+  ]\"\
 ")
 endif ()  # JPEGXL_EMSCRIPTEN

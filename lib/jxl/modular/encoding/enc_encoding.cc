@@ -168,7 +168,7 @@ Status EncodeModularChannelMAANS(const Image &image, pixel_type chan,
                                  const weighted::Header &wp_header,
                                  const Tree &global_tree,
                                  std::vector<Token> *tokens, AuxOut *aux_out,
-                                 size_t group_id) {
+                                 size_t group_id, bool skip_encoder_fast_path) {
   const Channel &channel = image.channel[chan];
 
   JXL_ASSERT(channel.w != 0 && channel.h != 0);
@@ -185,9 +185,10 @@ Status EncodeModularChannelMAANS(const Image &image, pixel_type chan,
   std::array<pixel_type, kNumStaticProperties> static_props = {chan,
                                                                (int)group_id};
   bool use_wp, is_wp_only;
+  bool is_gradient_only;
   size_t num_props;
-  FlatTree tree =
-      FilterTree(global_tree, static_props, &num_props, &use_wp, &is_wp_only);
+  FlatTree tree = FilterTree(global_tree, static_props, &num_props, &use_wp,
+                             &is_wp_only, &is_gradient_only);
   Properties properties(num_props);
   MATreeLookup tree_lookup(tree);
   JXL_DEBUG_V(3, "Encoding using a MA tree with %zu nodes", tree.size());
@@ -195,63 +196,14 @@ Status EncodeModularChannelMAANS(const Image &image, pixel_type chan,
   // Check if this tree is a WP-only tree with a small enough property value
   // range.
   // Initialized to avoid clang-tidy complaining.
-  uint16_t context_lookup[2 * kWPPropRange] = {};
-  // TODO(veluca): de-duplicate code in Decode.
+  uint16_t context_lookup[2 * kPropRangeFast] = {};
+  int8_t offsets[2 * kPropRangeFast] = {};
   if (is_wp_only) {
-    struct TreeRange {
-      // Begin *excluded*, end *included*. This works best with > vs <= decision
-      // nodes.
-      int begin, end;
-      size_t pos;
-    };
-    std::vector<TreeRange> ranges;
-    ranges.push_back(TreeRange{-kWPPropRange - 1, kWPPropRange - 1, 0});
-    while (!ranges.empty()) {
-      TreeRange cur = ranges.back();
-      ranges.pop_back();
-      if (cur.begin < -kWPPropRange - 1 || cur.begin >= kWPPropRange - 1 ||
-          cur.end > kWPPropRange - 1) {
-        // Tree is outside the allowed range, exit.
-        is_wp_only = false;
-        break;
-      }
-      auto &node = tree[cur.pos];
-      // Leaf.
-      if (node.property0 == -1) {
-        if (node.predictor_offset < std::numeric_limits<int8_t>::min() ||
-            node.predictor_offset > std::numeric_limits<int8_t>::max() ||
-            node.multiplier != 1 || node.predictor_offset != 0) {
-          is_wp_only = false;
-          break;
-        }
-        for (int i = cur.begin + 1; i < cur.end + 1; i++) {
-          context_lookup[i + kWPPropRange] = node.childID;
-        }
-        continue;
-      }
-      // > side of top node.
-      if (node.properties[0] >= kNumStaticProperties) {
-        ranges.push_back(TreeRange({node.splitvals[0], cur.end, node.childID}));
-        ranges.push_back(
-            TreeRange({node.splitval0, node.splitvals[0], node.childID + 1}));
-      } else {
-        ranges.push_back(TreeRange({node.splitval0, cur.end, node.childID}));
-      }
-      // <= side
-      if (node.properties[1] >= kNumStaticProperties) {
-        ranges.push_back(
-            TreeRange({node.splitvals[1], node.splitval0, node.childID + 2}));
-        ranges.push_back(
-            TreeRange({cur.begin, node.splitvals[1], node.childID + 3}));
-      } else {
-        ranges.push_back(
-            TreeRange({cur.begin, node.splitval0, node.childID + 2}));
-      }
-    }
+    is_wp_only = TreeToLookupTable(tree, context_lookup, offsets);
   }
 
   tokens->reserve(tokens->size() + channel.w * channel.h);
-  if (is_wp_only) {
+  if (is_wp_only && !skip_encoder_fast_path) {
     for (size_t c = 0; c < 3; c++) {
       FillImage(static_cast<float>(PredictorColor(Predictor::Weighted)[c]),
                 &predictor_img.Plane(c));
@@ -273,16 +225,17 @@ Status EncodeModularChannelMAANS(const Image &image, pixel_type chan,
             x, y, channel.w, top, left, topright, topleft, toptop, &properties,
             offset);
         uint32_t pos =
-            kWPPropRange +
-            std::min(std::max(-kWPPropRange, properties[0]), kWPPropRange - 1);
+            kPropRangeFast + std::min(std::max(-kPropRangeFast, properties[0]),
+                                      kPropRangeFast - 1);
         uint32_t ctx_id = context_lookup[pos];
-        int32_t residual = r[x] - guess;
+        int32_t residual = r[x] - guess - offsets[pos];
         tokens->emplace_back(ctx_id, PackSigned(residual));
         wp_state.UpdateErrors(r[x], x, y, channel.w);
       }
     }
   } else if (tree.size() == 1 && tree[0].predictor == Predictor::Zero &&
-             tree[0].multiplier == 1 && tree[0].predictor_offset == 0) {
+             tree[0].multiplier == 1 && tree[0].predictor_offset == 0 &&
+             !skip_encoder_fast_path) {
     for (size_t c = 0; c < 3; c++) {
       FillImage(static_cast<float>(PredictorColor(Predictor::Zero)[c]),
                 &predictor_img.Plane(c));
@@ -295,7 +248,7 @@ Status EncodeModularChannelMAANS(const Image &image, pixel_type chan,
     }
   } else if (tree.size() == 1 && tree[0].predictor != Predictor::Weighted &&
              (tree[0].multiplier & (tree[0].multiplier - 1)) == 0 &&
-             tree[0].predictor_offset == 0) {
+             tree[0].predictor_offset == 0 && !skip_encoder_fast_path) {
     // multiplier is a power of 2.
     for (size_t c = 0; c < 3; c++) {
       FillImage(static_cast<float>(PredictorColor(tree[0].predictor)[c]),
@@ -315,7 +268,7 @@ Status EncodeModularChannelMAANS(const Image &image, pixel_type chan,
       }
     }
 
-  } else if (!use_wp) {
+  } else if (!use_wp && !skip_encoder_fast_path) {
     const intptr_t onerow = channel.plane.PixelsPerRow();
     Channel references(properties.size() - kNumNonrefProperties, channel.w);
     for (size_t y = 0; y < channel.h; y++) {
@@ -502,7 +455,8 @@ Status ModularEncode(const Image &image, const ModularOptions &options,
     }
     if (image.channel[i].w > image_width) image_width = image.channel[i].w;
     JXL_RETURN_IF_ERROR(EncodeModularChannelMAANS(
-        image, i, header->wp_header, *tree, tokens, aux_out, group_id));
+        image, i, header->wp_header, *tree, tokens, aux_out, group_id,
+        options.skip_encoder_fast_path));
   }
 
   // Write data if not using a global tree/ANS stream.

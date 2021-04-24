@@ -17,8 +17,6 @@
 
 #include <stdint.h>
 
-#include "lib/jxl/aux_out.h"
-#include "lib/jxl/aux_out_fwd.h"
 #include "lib/jxl/base/compiler_specific.h"
 #include "lib/jxl/base/data_parallel.h"
 #include "lib/jxl/base/span.h"
@@ -50,8 +48,8 @@ Status DecodeFrameHeader(BitReader* JXL_RESTRICT reader,
 // `decoded->metadata` must already be set and must match metadata.m.
 Status DecodeFrame(const DecompressParams& dparams,
                    PassesDecoderState* dec_state, ThreadPool* JXL_RESTRICT pool,
-                   BitReader* JXL_RESTRICT reader, AuxOut* JXL_RESTRICT aux_out,
-                   ImageBundle* decoded, const CodecMetadata& metadata,
+                   BitReader* JXL_RESTRICT reader, ImageBundle* decoded,
+                   const CodecMetadata& metadata,
                    const SizeConstraints* constraints, bool is_preview = false);
 
 // Leaves reader in the same state as DecodeFrame would. Used to skip preview.
@@ -131,13 +129,62 @@ class FrameDecoder {
     return frame_header_.encoding == FrameEncoding::kVarDCT && finalized_dc_;
   }
 
+  // If the image has default exif orientation, no extra channels and no
+  // blending, the target output encoding is not linear sRGB, and the current
+  // frame cannot be referenced by future frames, sets the buffer to which uint8
+  // sRGB pixels will be decoded to.
+  // TODO(veluca): reduce this set of restrictions.
+  void MaybeSetRGB8OutputBuffer(uint8_t* rgb_output, bool is_rgba) const {
+    if (decoded_->metadata()->GetOrientation() != Orientation::kIdentity) {
+      return;
+    }
+    if (decoded_->metadata()->num_extra_channels != 0) {
+      return;
+    }
+    if (frame_header_.blending_info.mode != BlendMode::kReplace ||
+        frame_header_.custom_size_or_origin) {
+      return;
+    }
+    // If output_encoding is linear sRGB converted from XYB, it would require an
+    // extra conversion to sRGB, which is not implemented yet. However, since we
+    // are not doing any blending, we can just convert to sRGB anyway instead of
+    // linear.
+    if (dec_state_->output_encoding.IsLinearSRGB() &&
+        decoded_->metadata()->xyb_encoded) {
+      dec_state_->output_encoding =
+          ColorEncoding::SRGB(dec_state_->output_encoding.IsGray());
+    }
+    if (frame_header_.CanBeReferenced()) {
+      return;
+    }
+    dec_state_->rgb_output = rgb_output;
+    dec_state_->rgb_output_is_rgba = is_rgba;
+#if !JXL_HIGH_PRECISION
+    if (!is_rgba && decoded_->metadata()->xyb_encoded &&
+        dec_state_->output_encoding.IsSRGB() &&
+        frame_header_.nonserialized_metadata->transform_data
+            .opsin_inverse_matrix.all_default &&
+        std::abs(frame_header_.nonserialized_metadata->m.IntensityTarget() -
+                 255.0f) < 1.0f &&
+        HasFastXYBTosRGB8() && frame_header_.needs_color_transform()) {
+      dec_state_->fast_xyb_srgb8_conversion = true;
+    }
+#endif
+  }
+
+  // Returns true if the rgb output buffer passed by MaybeSetRGB8OutputBuffer
+  // has been/will be populated by Flush() / FinalizeFrame().
+  bool HasRGBBuffer() const { return dec_state_->rgb_output != nullptr; }
+
  private:
   Status ProcessDCGlobal(BitReader* br);
   Status ProcessDCGroup(size_t dc_group_id, BitReader* br);
   void FinalizeDC();
+  void AllocateOutput();
   Status ProcessACGlobal(BitReader* br);
   Status ProcessACGroup(size_t ac_group_id, BitReader* JXL_RESTRICT* br,
-                        size_t num_passes, size_t thread, bool force_draw);
+                        size_t num_passes, size_t thread, bool force_draw,
+                        bool dc_only);
 
   // Allocates storage for parallel decoding using up to `num_threads` threads
   // of up to `num_tasks` tasks. The value of `thread` passed to

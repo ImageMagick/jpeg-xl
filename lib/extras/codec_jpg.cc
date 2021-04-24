@@ -29,6 +29,7 @@
 
 #include "lib/jxl/base/compiler_specific.h"
 #include "lib/jxl/base/status.h"
+#include "lib/jxl/base/time.h"
 #include "lib/jxl/color_encoding_internal.h"
 #include "lib/jxl/color_management.h"
 #include "lib/jxl/common.h"
@@ -157,7 +158,7 @@ Status ReadICCProfile(jpeg_decompress_struct* const cinfo,
   return true;
 }
 
-Status ReadExif(jpeg_decompress_struct* const cinfo, PaddedBytes* const exif) {
+void ReadExif(jpeg_decompress_struct* const cinfo, PaddedBytes* const exif) {
   constexpr size_t kExifSignatureSize = sizeof kExifSignature;
   for (jpeg_saved_marker_ptr marker = cinfo->marker_list; marker != nullptr;
        marker = marker->next) {
@@ -169,61 +170,15 @@ Status ReadExif(jpeg_decompress_struct* const cinfo, PaddedBytes* const exif) {
 #endif
     if (!MarkerIsExif(marker)) continue;
     size_t marker_length = marker->data_length - kExifSignatureSize;
-    exif->resize(marker_length + 4);
-    // spec requires Exif box to start with uint32 tiff header offset, which is
-    // 0
-    memset(exif->data(), 0, 4);
-    std::copy_n(marker->data + kExifSignatureSize, marker_length,
-                exif->data() + 4);
-    return true;
+    exif->resize(marker_length);
+    std::copy_n(marker->data + kExifSignatureSize, marker_length, exif->data());
+    return;
   }
-  return false;
 }
 
 // TODO (jon): take orientation into account when writing jpeg output
 // TODO (jon): write Exif blob also in sjpeg encoding
 // TODO (jon): overwrite orientation in Exif blob to avoid double orientation
-
-// Parses the Exif data just enough to extract the Orientation tag.
-// If the Exif data is invalid or could not be parsed, then orientation 1
-// (Identity) is returned.
-uint32_t GetExifOrientation(const PaddedBytes& exif) {
-  if (exif.size() < 12) return 1;  // not enough bytes for a valid exif blob
-  const uint8_t* t = exif.data();
-  if (LoadLE32(t) != 0) {
-    return 1;  // tiff offset should be zero
-  }
-  t += 4;
-  bool bigendian = false;
-  if (LoadLE32(t) == 0x2A004D4D) {
-    bigendian = true;
-  } else if (LoadLE32(t) != 0x002A4949) {
-    return 1;  // not a valid tiff header
-  }
-  t += 4;
-  uint32_t offset = (bigendian ? LoadBE32(t) : LoadLE32(t));
-  if (exif.size() < 12 + offset + 2 || offset < 8) return 1;
-  t += offset - 4;
-  uint32_t nb_tags = (bigendian ? LoadBE16(t) : LoadLE16(t));
-  t += 2;
-  while (nb_tags > 0) {
-    if (t + 12 >= exif.data() + exif.size()) return 1;
-    uint32_t tag = (bigendian ? LoadBE16(t) : LoadLE16(t));
-    t += 2;
-    uint32_t type = (bigendian ? LoadBE16(t) : LoadLE16(t));
-    t += 2;
-    uint32_t count = (bigendian ? LoadBE32(t) : LoadLE32(t));
-    t += 4;
-    uint32_t value = (bigendian ? LoadBE16(t) : LoadLE16(t));
-    t += 4;
-    if (tag == 274) {
-      // that's the orientation tag
-      if (type == 3 && count == 1) return value;
-    }
-    nb_tags--;
-  }
-  return 1;
-}
 
 void WriteICCProfile(jpeg_compress_struct* const cinfo,
                      const PaddedBytes& icc) {
@@ -292,7 +247,8 @@ void MyOutputMessage(j_common_ptr cinfo) {
 }  // namespace
 
 Status DecodeImageJPG(const Span<const uint8_t> bytes, ThreadPool* pool,
-                      CodecInOut* io) {
+                      CodecInOut* io, double* const elapsed_deinterleave) {
+  if (elapsed_deinterleave != nullptr) *elapsed_deinterleave = 0;
   // Don't do anything for non-JPEG files (no need to report an error)
   if (!IsJPG(bytes)) return false;
   const DecodeTarget target = io->dec_target;
@@ -352,9 +308,7 @@ Status DecodeImageJPG(const Span<const uint8_t> bytes, ThreadPool* pool,
     } else {
       color_encoding = ColorEncoding::SRGB(cinfo.output_components == 1);
     }
-    if (ReadExif(&cinfo, &io->blobs.exif)) {
-      io->metadata.m.orientation = GetExifOrientation(io->blobs.exif);
-    }
+    ReadExif(&cinfo, &io->blobs.exif);
     io->metadata.m.SetUintSamples(BITS_IN_JSAMPLE);
     io->metadata.m.color_encoding = color_encoding;
     int nbcomp = cinfo.num_components;
@@ -381,6 +335,7 @@ Status DecodeImageJPG(const Span<const uint8_t> bytes, ThreadPool* pool,
       __msan_unpoison(row.get(), sizeof(JSAMPLE) * cinfo.output_components *
                                      cinfo.image_width);
 #endif
+      auto start = Now();
       float* const JXL_RESTRICT output_row[] = {
           image.PlaneRow(0, y), image.PlaneRow(1, y), image.PlaneRow(2, y)};
       if (cinfo.output_components == 1) {
@@ -394,6 +349,10 @@ Status DecodeImageJPG(const Span<const uint8_t> bytes, ThreadPool* pool,
             output_row[c][x] = row[3 * x + c] * (1.f / kJPEGSampleMultiplier);
           }
         }
+      }
+      auto end = Now();
+      if (elapsed_deinterleave != nullptr) {
+        *elapsed_deinterleave += end - start;
       }
     }
     io->SetFromImage(std::move(image), color_encoding);

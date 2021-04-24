@@ -267,8 +267,26 @@ struct ColorEncoding : public Fields {
     return true;
   }
 
+  // Sets the raw ICC profile bytes, without parsing the ICC, and without
+  // updating the direct fields such as whitepoint, primaries and color
+  // space. Functions to get and set fields, such as SetWhitePoint, cannot be
+  // used anymore after this and functions such as IsSRGB return false no matter
+  // what the contents of the icc profile.
+  Status SetICCRaw(PaddedBytes&& icc) {
+    if (icc.empty()) return false;
+    icc_ = std::move(icc);
+
+    want_icc_ = true;
+    have_fields_ = false;
+    return true;
+  }
+
   // Returns whether to send the ICC profile in the codestream.
   bool WantICC() const { return want_icc_; }
+
+  // Return whether the direct fields are set, if false but ICC is set, only
+  // raw ICC bytes are known.
+  bool HaveFields() const { return have_fields_; }
 
   // Causes WantICC() to return false if ICC() can be reconstructed from fields.
   // Defined in color_management.cc.
@@ -292,7 +310,11 @@ struct ColorEncoding : public Fields {
     return false;
   }
 
+  // Returns whether the color space is known to be sRGB. If a raw unparsed ICC
+  // profile is set without the fields being set, this returns false, even if
+  // the content of the ICC profile would match sRGB.
   bool IsSRGB() const {
+    if (!have_fields_) return false;
     if (!IsGray() && color_space_ != ColorSpace::kRGB) return false;
     if (white_point != WhitePoint::kD65) return false;
     if (primaries != Primaries::kSRGB) return false;
@@ -300,7 +322,11 @@ struct ColorEncoding : public Fields {
     return true;
   }
 
+  // Returns whether the color space is known to be linear sRGB. If a raw
+  // unparsed ICC profile is set without the fields being set, this returns
+  // false, even if the content of the ICC profile would match linear sRGB.
   bool IsLinearSRGB() const {
+    if (!have_fields_) return false;
     if (!IsGray() && color_space_ != ColorSpace::kRGB) return false;
     if (white_point != WhitePoint::kD65) return false;
     if (primaries != Primaries::kSRGB) return false;
@@ -367,6 +393,7 @@ struct ColorEncoding : public Fields {
 
   mutable bool all_default;
 
+  // Only valid if HaveFields()
   WhitePoint white_point;
   Primaries primaries;  // Only valid if HasPrimaries()
   CustomTransferFunction tf;
@@ -381,6 +408,11 @@ struct ColorEncoding : public Fields {
   // If true, the codestream contains an ICC profile and we do not serialize
   // fields. Otherwise, fields are serialized and we create an ICC profile.
   bool want_icc_;
+
+  // When false, fields such as white_point and tf are invalid and must not be
+  // used. This occurs after setting a raw bytes-only ICC profile, only the
+  // ICC bytes may be used. The color_space_ field is still valid.
+  bool have_fields_ = true;
 
   PaddedBytes icc_;  // Valid ICC profile
 
