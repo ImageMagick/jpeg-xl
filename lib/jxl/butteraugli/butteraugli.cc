@@ -1768,7 +1768,7 @@ Image3F* ButteraugliComparator::Temp() const {
 }
 
 void ButteraugliComparator::ReleaseTemp() const {
-  temp_in_use_.clear(std::memory_order_acq_rel);
+  temp_in_use_.clear(std::memory_order_release);
 }
 
 ButteraugliComparator::ButteraugliComparator(const Image3F& rgb0,
