@@ -45,6 +45,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#include <algorithm>  // max
 #include <atomic>
 #include <condition_variable>  //NOLINT
 #include <mutex>               //NOLINT
