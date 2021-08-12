@@ -328,7 +328,7 @@ if (JPEGXL_ENABLE_SKCMS)
   list(APPEND JPEGXL_INTERNAL_FLAGS -DJPEGXL_ENABLE_SKCMS=1)
   list(APPEND JPEGXL_INTERNAL_LIBS skcms)
 else ()
-  list(APPEND JPEGXL_INTERNAL_LIBS lcms2)
+  #list(APPEND JPEGXL_INTERNAL_LIBS lcms2)
 endif ()
 
 if (NOT JPEGXL_ENABLE_TRANSCODE_JPEG)
@@ -390,12 +390,12 @@ if (JPEGXL_ENABLE_SKCMS)
     $<TARGET_PROPERTY:skcms,INCLUDE_DIRECTORIES>
   )
 else ()
-  target_include_directories(jxl_enc-obj PRIVATE
-    $<TARGET_PROPERTY:lcms2,INCLUDE_DIRECTORIES>
-  )
-  target_include_directories(jxl_dec-obj PRIVATE
-    $<TARGET_PROPERTY:lcms2,INCLUDE_DIRECTORIES>
-  )
+  #target_include_directories(jxl_enc-obj PRIVATE
+  #  $<TARGET_PROPERTY:lcms2,INCLUDE_DIRECTORIES>
+  #)
+  #target_include_directories(jxl_dec-obj PRIVATE
+  #  $<TARGET_PROPERTY:lcms2,INCLUDE_DIRECTORIES>
+  #)
 endif ()
 
 # Headers for exporting/importing public headers
