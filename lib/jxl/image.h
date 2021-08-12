@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #ifndef LIB_JXL_IMAGE_H_
 #define LIB_JXL_IMAGE_H_
@@ -21,6 +12,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <algorithm>
 #include <utility>  // std::move
 
 #include "lib/jxl/base/cache_aligned.h"
@@ -238,6 +230,16 @@ class Rect {
 
   Rect Line(size_t y) const { return Lines(y, 1); }
 
+  JXL_MUST_USE_RESULT Rect Intersection(const Rect& other) const {
+    return Rect(std::max(x0_, other.x0_), std::max(y0_, other.y0_), xsize_,
+                ysize_, std::min(x0_ + xsize_, other.x0_ + other.xsize_),
+                std::min(y0_ + ysize_, other.y0_ + other.ysize_));
+  }
+
+  JXL_MUST_USE_RESULT Rect Translate(int64_t x_offset, int64_t y_offset) const {
+    return Rect(x0_ + x_offset, y0_ + y_offset, xsize_, ysize_);
+  }
+
   template <typename T>
   T* Row(Plane<T>* image, size_t y) const {
     return image->Row(y + y0_) + x0_;
@@ -261,6 +263,11 @@ class Rect {
   template <typename T>
   const T* ConstPlaneRow(const Image3<T>& image, size_t c, size_t y) const {
     return image.ConstPlaneRow(c, y + y0_) + x0_;
+  }
+
+  bool IsInside(const Rect& other) const {
+    return x0_ >= other.x0() && x0_ + xsize_ <= other.x0() + other.xsize_ &&
+           y0_ >= other.y0() && y0_ + ysize_ <= other.y0() + other.ysize();
   }
 
   // Returns true if this Rect fully resides in the given image. ImageT could be

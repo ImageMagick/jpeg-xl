@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #ifndef LIB_JXL_SPLINES_H_
 #define LIB_JXL_SPLINES_H_
@@ -28,8 +19,6 @@
 #include "lib/jxl/chroma_from_luma.h"
 #include "lib/jxl/dec_ans.h"
 #include "lib/jxl/dec_bit_reader.h"
-#include "lib/jxl/enc_ans.h"
-#include "lib/jxl/enc_bit_writer.h"
 #include "lib/jxl/entropy_coder.h"
 #include "lib/jxl/image.h"
 
@@ -64,6 +53,8 @@ struct Spline {
   float sigma_dct[32];
 };
 
+class QuantizedSplineEncoder;
+
 class QuantizedSpline {
  public:
   QuantizedSpline() = default;
@@ -75,13 +66,13 @@ class QuantizedSpline {
                     int32_t quantization_adjustment, float ytox,
                     float ytob) const;
 
-  void Tokenize(std::vector<Token>* tokens) const;
-
   Status Decode(const std::vector<uint8_t>& context_map,
                 ANSSymbolReader* decoder, BitReader* br,
                 size_t max_control_points, size_t* total_num_control_points);
 
  private:
+  friend class QuantizedSplineEncoder;
+
   std::vector<std::pair<int64_t, int64_t>>
       control_points_;  // Double delta-encoded.
   int color_dct_[3][32] = {};
@@ -127,8 +118,6 @@ class Splines {
   std::vector<QuantizedSpline> splines_;
   std::vector<Spline::Point> starting_points_;
 };
-
-Splines FindSplines(const Image3F& opsin);
 
 }  // namespace jxl
 

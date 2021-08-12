@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #ifndef LIB_JXL_DEC_RECONSTRUCT_H_
 #define LIB_JXL_DEC_RECONSTRUCT_H_
@@ -45,19 +36,20 @@ Status FinalizeFrameDecoding(ImageBundle* JXL_RESTRICT decoded,
                              PassesDecoderState* dec_state, ThreadPool* pool,
                              bool force_fir, bool skip_blending);
 
-// Renders the `output_rect` portion of the final image to `output_image`
-// (unless the frame is upsampled - in which case, `output_rect` is scaled
+// Renders the `frame_rect` portion of the final image to `output_image`
+// (unless the frame is upsampled - in which case, `frame_rect` is scaled
 // accordingly). `input_rect` should have the same shape. `input_rect` always
-// refers to the non-padded pixels. `output_rect.x0()` is guaranteed to be a
-// multiple of GroupBorderAssigner::kPaddingRoundX. `output_rect.xsize()` is
+// refers to the non-padded pixels. `frame_rect.x0()` is guaranteed to be a
+// multiple of GroupBorderAssigner::kPaddingRoundX. `frame_rect.xsize()` is
 // either a multiple of GroupBorderAssigner::kPaddingRoundX, or is such that
-// `output_rect.x0() + output_rect.xsize() == frame_dim.xsize`. `input_image`
-// may be mutated by adding padding. If `output_rect` is on an image border, the
+// `frame_rect.x0() + frame_rect.xsize() == frame_dim.xsize`. `input_image`
+// may be mutated by adding padding. If `frame_rect` is on an image border, the
 // input will be padded. Otherwise, appropriate padding must already be present.
-Status FinalizeImageRect(Image3F* input_image, const Rect& input_rect,
-                         PassesDecoderState* dec_state, size_t thread,
-                         ImageBundle* JXL_RESTRICT output_image,
-                         const Rect& output_rect);
+Status FinalizeImageRect(
+    Image3F* input_image, const Rect& input_rect,
+    const std::vector<std::pair<ImageF*, Rect>>& extra_channels,
+    PassesDecoderState* dec_state, size_t thread,
+    ImageBundle* JXL_RESTRICT output_image, const Rect& frame_rect);
 
 // Fills padding around `img:rect` in the x direction by mirroring. Padding is
 // applied so that a full border of xpadding and ypadding is available, except
@@ -67,6 +59,10 @@ Status FinalizeImageRect(Image3F* input_image, const Rect& input_rect,
 void EnsurePaddingInPlace(Image3F* img, const Rect& rect,
                           const Rect& image_rect, size_t image_xsize,
                           size_t image_ysize, size_t xpadding, size_t ypadding);
+
+// For DC in the API.
+void UndoXYB(const Image3F& src, Image3F* dst,
+             const OutputEncodingInfo& output_info, ThreadPool* pool);
 
 }  // namespace jxl
 

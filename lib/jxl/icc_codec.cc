@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #include "lib/jxl/icc_codec.h"
 
@@ -24,7 +15,7 @@
 #include "lib/jxl/aux_out_fwd.h"
 #include "lib/jxl/base/byte_order.h"
 #include "lib/jxl/common.h"
-#include "lib/jxl/enc_ans.h"
+#include "lib/jxl/dec_ans.h"
 #include "lib/jxl/fields.h"
 #include "lib/jxl/icc_codec_common.h"
 
@@ -69,15 +60,21 @@ void Shuffle(uint8_t* data, size_t size, size_t width) {
   }
 }
 
+// TODO(eustas): should be 20, or even 18, once DecodeVarInt is improved;
+//               currently DecodeVarInt does not signal the errors, and marks
+//               11 bytes as used even if only 10 are used (and 9 is enough for
+//               63-bit values).
+constexpr const size_t kPreambleSize = 22;  // enough for reading 2 VarInts
+
 }  // namespace
 
 // Mimics the beginning of UnpredictICC for quick validity check.
+// At least kPreambleSize bytes of data should be valid at invocation time.
 Status CheckPreamble(const PaddedBytes& data, size_t enc_size,
                      size_t output_limit) {
   const uint8_t* enc = data.data();
   size_t size = data.size();
   size_t pos = 0;
-  JXL_DASSERT(size >= 20);
   uint64_t osize = DecodeVarInt(enc, size, &pos);
   JXL_RETURN_IF_ERROR(CheckIs32Bit(osize));
   if (pos >= size) return JXL_FAILURE("Out of bounds");
@@ -308,65 +305,99 @@ Status UnpredictICC(const uint8_t* enc, size_t size, PaddedBytes* result) {
   return true;
 }
 
-Status ReadICC(BitReader* JXL_RESTRICT reader, PaddedBytes* JXL_RESTRICT icc,
-               size_t output_limit) {
-  icc->clear();
-  const auto checkEndOfInput = [&]() -> Status {
-    if (reader->AllReadsWithinBounds()) return true;
-    return JXL_STATUS(StatusCode::kNotEnoughBytes,
-                      "Not enough bytes for reading ICC profile");
-  };
-  JXL_RETURN_IF_ERROR(checkEndOfInput());
-  uint64_t enc_size = U64Coder::Read(reader);
-  if (enc_size > 268435456) {
-    // Avoid too large memory allocation for invalid file.
-    // TODO(lode): a more accurate limit would be the filesize of the JXL file,
-    // if we can have it available here.
-    return JXL_FAILURE("Too large encoded profile");
-  }
-  PaddedBytes decompressed;
-  std::vector<uint8_t> context_map;
-  ANSCode code;
-  JXL_RETURN_IF_ERROR(
-      DecodeHistograms(reader, kNumICCContexts, &code, &context_map));
-  ANSSymbolReader ans_reader(&code, reader);
-  size_t used_bits_base = reader->TotalBitsConsumed();
-  size_t i = 0;
-  constexpr const size_t kPreambleSize = 20;  // enough for 2 VarInt
-  size_t preamble_size = std::min<size_t>(20, enc_size);
-  decompressed.resize(std::min<size_t>(i + 0x400, enc_size));
-  for (; i < preamble_size; i++) {
-    decompressed[i] = ans_reader.ReadHybridUint(
-        ICCANSContext(i, i > 0 ? decompressed[i - 1] : 0,
-                      i > 1 ? decompressed[i - 2] : 0),
-        reader, context_map);
-  }
-  JXL_RETURN_IF_ERROR(checkEndOfInput());
-  if (enc_size > kPreambleSize) {
-    JXL_RETURN_IF_ERROR(CheckPreamble(decompressed, enc_size, output_limit));
-  }
-  for (; i < enc_size; i++) {
-    if ((i & 0x3FF) == 0) {
-      JXL_RETURN_IF_ERROR(checkEndOfInput());
-      if ((i > 0) && (((i & 0xFFFF) == 0))) {
-        float used_bytes =
-            (reader->TotalBitsConsumed() - used_bits_base) / 8.0f;
-        if (i > used_bytes * 256) return JXL_FAILURE("Corrupted stream");
-      }
-      decompressed.resize(std::min<size_t>(i + 0x400, enc_size));
+Status ICCReader::Init(BitReader* reader, size_t output_limit) {
+  JXL_RETURN_IF_ERROR(CheckEOI(reader));
+  used_bits_base_ = reader->TotalBitsConsumed();
+  if (bits_to_skip_ == 0) {
+    enc_size_ = U64Coder::Read(reader);
+    if (enc_size_ > 268435456) {
+      // Avoid too large memory allocation for invalid file.
+      return JXL_FAILURE("Too large encoded profile");
     }
-    JXL_DASSERT(i >= 2);
-    decompressed[i] = ans_reader.ReadHybridUint(
-        ICCANSContext(i, decompressed[i - 1], decompressed[i - 2]), reader,
-        context_map);
+    JXL_RETURN_IF_ERROR(
+        DecodeHistograms(reader, kNumICCContexts, &code_, &context_map_));
+    ans_reader_ = ANSSymbolReader(&code_, reader);
+    i_ = 0;
+    decompressed_.resize(std::min<size_t>(i_ + 0x400, enc_size_));
+    for (; i_ < std::min<size_t>(2, enc_size_); i_++) {
+      decompressed_[i_] = ans_reader_.ReadHybridUint(
+          ICCANSContext(i_, i_ > 0 ? decompressed_[i_ - 1] : 0,
+                        i_ > 1 ? decompressed_[i_ - 2] : 0),
+          reader, context_map_);
+    }
+    if (enc_size_ > kPreambleSize) {
+      for (; i_ < kPreambleSize; i_++) {
+        decompressed_[i_] = ans_reader_.ReadHybridUint(
+            ICCANSContext(i_, decompressed_[i_ - 1], decompressed_[i_ - 2]),
+            reader, context_map_);
+      }
+      JXL_RETURN_IF_ERROR(CheckEOI(reader));
+      JXL_RETURN_IF_ERROR(
+          CheckPreamble(decompressed_, enc_size_, output_limit));
+    }
+    bits_to_skip_ = reader->TotalBitsConsumed() - used_bits_base_;
+  } else {
+    reader->SkipBits(bits_to_skip_);
   }
-  JXL_RETURN_IF_ERROR(checkEndOfInput());
-  if (!ans_reader.CheckANSFinalState()) {
+  return true;
+}
+
+Status ICCReader::Process(BitReader* reader, PaddedBytes* icc) {
+  ANSSymbolReader::Checkpoint checkpoint;
+  size_t saved_i = 0;
+  auto save = [&]() {
+    ans_reader_.Save(&checkpoint);
+    bits_to_skip_ = reader->TotalBitsConsumed() - used_bits_base_;
+    saved_i = i_;
+  };
+  save();
+  auto check_and_restore = [&]() {
+    Status status = CheckEOI(reader);
+    if (!status) {
+      // not enough bytes.
+      ans_reader_.Restore(checkpoint);
+      i_ = saved_i;
+      return status;
+    }
+    return Status(true);
+  };
+  for (; i_ < enc_size_; i_++) {
+    if (i_ % ANSSymbolReader::kMaxCheckpointInterval == 0 && i_ > 0) {
+      JXL_RETURN_IF_ERROR(check_and_restore());
+      save();
+      if ((i_ > 0) && (((i_ & 0xFFFF) == 0))) {
+        float used_bytes =
+            (reader->TotalBitsConsumed() - used_bits_base_) / 8.0f;
+        if (i_ > used_bytes * 256) return JXL_FAILURE("Corrupted stream");
+      }
+      decompressed_.resize(std::min<size_t>(i_ + 0x400, enc_size_));
+    }
+    JXL_DASSERT(i_ >= 2);
+    decompressed_[i_] = ans_reader_.ReadHybridUint(
+        ICCANSContext(i_, decompressed_[i_ - 1], decompressed_[i_ - 2]), reader,
+        context_map_);
+  }
+  JXL_RETURN_IF_ERROR(check_and_restore());
+  bits_to_skip_ = reader->TotalBitsConsumed() - used_bits_base_;
+  if (!ans_reader_.CheckANSFinalState()) {
     return JXL_FAILURE("Corrupted ICC profile");
   }
 
-  JXL_RETURN_IF_ERROR(
-      UnpredictICC(decompressed.data(), decompressed.size(), icc));
+  icc->clear();
+  return UnpredictICC(decompressed_.data(), decompressed_.size(), icc);
+}
+
+Status ICCReader::CheckEOI(BitReader* reader) {
+  if (reader->AllReadsWithinBounds()) return true;
+  return JXL_STATUS(StatusCode::kNotEnoughBytes,
+                    "Not enough bytes for reading ICC profile");
+}
+
+Status ReadICC(BitReader* JXL_RESTRICT reader, PaddedBytes* JXL_RESTRICT icc,
+               size_t output_limit) {
+  ICCReader icc_reader;
+  JXL_RETURN_IF_ERROR(icc_reader.Init(reader, output_limit));
+  JXL_RETURN_IF_ERROR(icc_reader.Process(reader, icc));
   return true;
 }
 

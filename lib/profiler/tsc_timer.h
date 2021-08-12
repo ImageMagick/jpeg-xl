@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #ifndef LIB_PROFILER_TSC_TIMER_H_
 #define LIB_PROFILER_TSC_TIMER_H_
@@ -21,12 +12,10 @@
 #include <stdint.h>
 
 #include <ctime>
+#include <hwy/base.h>
 #include <hwy/cache_control.h>  // LoadFence
 
-#include "lib/jxl/base/arch_macros.h"  // for JXL_ARCH_*
-#include "lib/jxl/base/compiler_specific.h"
-
-namespace jxl {
+namespace profiler {
 
 // TicksBefore/After return absolute timestamps and must be placed immediately
 // before and after the region to measure. The functions are distinct because
@@ -80,17 +69,17 @@ namespace jxl {
 // Returns a 64-bit timestamp in unit of 'ticks'; to convert to seconds,
 // divide by InvariantTicksPerSecond. Although 32-bit ticks are faster to read,
 // they overflow too quickly to measure long regions.
-static inline uint64_t TicksBefore() {
+static HWY_INLINE HWY_MAYBE_UNUSED uint64_t TicksBefore() {
   uint64_t t;
-#if JXL_ARCH_PPC
+#if HWY_ARCH_PPC
   asm volatile("mfspr %0, %1" : "=r"(t) : "i"(268));
-#elif JXL_ARCH_X64 && JXL_COMPILER_MSVC
+#elif HWY_ARCH_X86_64 && HWY_COMPILER_MSVC
   hwy::LoadFence();
-  JXL_COMPILER_FENCE;
+  HWY_FENCE;
   t = __rdtsc();
   hwy::LoadFence();
-  JXL_COMPILER_FENCE;
-#elif JXL_ARCH_X64 && (JXL_COMPILER_CLANG || JXL_COMPILER_GCC)
+  HWY_FENCE;
+#elif HWY_ARCH_X86_64 && (HWY_COMPILER_CLANG || HWY_COMPILER_GCC)
   asm volatile(
       "lfence\n\t"
       "rdtsc\n\t"
@@ -111,15 +100,15 @@ static inline uint64_t TicksBefore() {
   return t;
 }
 
-static inline uint64_t TicksAfter() {
+static HWY_INLINE HWY_MAYBE_UNUSED uint64_t TicksAfter() {
   uint64_t t;
-#if JXL_ARCH_X64 && JXL_COMPILER_MSVC
-  JXL_COMPILER_FENCE;
+#if HWY_ARCH_X86_64 && HWY_COMPILER_MSVC
+  HWY_FENCE;
   unsigned aux;
   t = __rdtscp(&aux);
   hwy::LoadFence();
-  JXL_COMPILER_FENCE;
-#elif JXL_ARCH_X64 && (JXL_COMPILER_CLANG || JXL_COMPILER_GCC)
+  HWY_FENCE;
+#elif HWY_ARCH_X86_64 && (HWY_COMPILER_CLANG || HWY_COMPILER_GCC)
   // Use inline asm because __rdtscp generates code to store TSC_AUX (ecx).
   asm volatile(
       "rdtscp\n\t"
@@ -137,6 +126,6 @@ static inline uint64_t TicksAfter() {
   return t;
 }
 
-}  // namespace jxl
+}  // namespace profiler
 
 #endif  // LIB_PROFILER_TSC_TIMER_H_

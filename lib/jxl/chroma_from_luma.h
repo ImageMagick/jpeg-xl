@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #ifndef LIB_JXL_CHROMA_FROM_LUMA_H_
 #define LIB_JXL_CHROMA_FROM_LUMA_H_
@@ -31,7 +22,6 @@
 #include "lib/jxl/common.h"
 #include "lib/jxl/dec_ans.h"
 #include "lib/jxl/dec_bit_reader.h"
-#include "lib/jxl/enc_ans.h"
 #include "lib/jxl/enc_bit_writer.h"
 #include "lib/jxl/entropy_coder.h"
 #include "lib/jxl/field_encodings.h"
@@ -62,7 +52,7 @@ static constexpr uint8_t kDefaultColorFactor = 84;
 static constexpr uint8_t kCFLFixedPointPrecision = 11;
 
 static constexpr U32Enc kColorFactorDist(Val(kDefaultColorFactor), Val(256),
-                                         BitsOffset(2, 8), BitsOffset(258, 12));
+                                         BitsOffset(8, 2), BitsOffset(16, 258));
 
 struct ColorCorrelationMap {
   ColorCorrelationMap() = default;

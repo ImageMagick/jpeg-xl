@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #include "lib/jxl/jpeg/dec_jpeg_data.h"
 
@@ -51,6 +42,9 @@ Status DecodeJPEGData(Span<const uint8_t> encoded, JPEGData* jpeg_data) {
     size_t available_out = data.size();
     uint8_t* out = data.data();
     while (available_out != 0) {
+      if (BrotliDecoderIsFinished(brotli_dec)) {
+        return JXL_FAILURE("Not enough decompressed output");
+      }
       result = BrotliDecoderDecompressStream(brotli_dec, &available_in, &in,
                                              &available_out, &out, nullptr);
       if (result !=
@@ -118,8 +112,26 @@ Status DecodeJPEGData(Span<const uint8_t> encoded, JPEGData* jpeg_data) {
     JXL_RETURN_IF_ERROR(br_read(jpeg_data->inter_marker_data[i]));
   }
   JXL_RETURN_IF_ERROR(br_read(jpeg_data->tail_data));
-  if (result != BrotliDecoderResult::BROTLI_DECODER_RESULT_SUCCESS) {
-    return JXL_FAILURE("Invalid brotli-compressed data");
+
+  // Check if there is more decompressed output.
+  size_t available_out = 1;
+  uint64_t dummy;
+  uint8_t* next_out = reinterpret_cast<uint8_t*>(&dummy);
+  result = BrotliDecoderDecompressStream(brotli_dec, &available_in, &in,
+                                         &available_out, &next_out, nullptr);
+  if (available_out == 0 ||
+      result == BrotliDecoderResult::BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT) {
+    return JXL_FAILURE("Excess data in compressed stream");
+  }
+  if (result == BrotliDecoderResult::BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT) {
+    return JXL_FAILURE("Incomplete brotli-stream");
+  }
+  if (!BrotliDecoderIsFinished(brotli_dec) ||
+      result != BrotliDecoderResult::BROTLI_DECODER_RESULT_SUCCESS) {
+    return JXL_FAILURE("Corrupted brotli-stream");
+  }
+  if (available_in != 0) {
+    return JXL_FAILURE("Unused data after brotli stream");
   }
 
   return true;

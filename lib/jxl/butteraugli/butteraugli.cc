@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 //
 // Author: Jyrki Alakuijala (jyrki.alakuijala@gmail.com)
 //
@@ -42,15 +33,16 @@
 #include <new>
 #include <vector>
 
+#if PROFILER_ENABLED
+#include <chrono>
+#endif  // PROFILER_ENABLED
+
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "lib/jxl/butteraugli/butteraugli.cc"
 #include <hwy/foreach_target.h>
 
 #include "lib/jxl/base/profiler.h"
 #include "lib/jxl/base/status.h"
-#if PROFILER_ENABLED
-#include "lib/jxl/base/time.h"
-#endif  // PROFILER_ENABLED
 #include "lib/jxl/convolve.h"
 #include "lib/jxl/fast_math-inl.h"
 #include "lib/jxl/gauss_blur.h"
@@ -561,7 +553,7 @@ static void SeparateFrequencies(size_t xsize, size_t ysize,
       }
     }
     Blur(ps.mf.Plane(i), kSigmaHf, params, blur_temp, &ps.mf.Plane(i));
-    static const double kRemoveMfRange = 0.3;
+    static const double kRemoveMfRange = 0.29;
     static const double kAddMfRange = 0.1;
     if (i == 0) {
       for (size_t y = 0; y < ysize; ++y) {
@@ -596,7 +588,7 @@ static void SeparateFrequencies(size_t xsize, size_t ysize,
   ps.uhf[1] = ImageF(xsize, ysize);
 
   // Suppress red-green by intensity change in the high freq channels.
-  static const double suppress = 57.3408675836;
+  static const double suppress = 46.0;
   SuppressXByY(ps.hf[0], ps.hf[1], suppress, &ps.uhf[0]);
   // hf is the SuppressXByY output, uhf will be written below.
   ps.hf[0].Swap(ps.uhf[0]);
@@ -611,13 +603,13 @@ static void SeparateFrequencies(size_t xsize, size_t ysize,
       }
     }
     Blur(ps.hf[i], kSigmaUhf, params, blur_temp, &ps.hf[i]);
-    static const double kRemoveHfRange = 1.20207927775;
-    static const double kAddHfRange = 0.0952289842356;
-    static const double kRemoveUhfRange = 0.0446383842706;
+    static const double kRemoveHfRange = 1.5;
+    static const double kAddHfRange = 0.132;
+    static const double kRemoveUhfRange = 0.04;
     static const double kMaxclampHf = 28.4691806922;
     static const double kMaxclampUhf = 5.19175294647;
-    static double kMulYHf = 2.12418867662;
-    static double kMulYUhf = 2.59313763794;
+    static double kMulYHf = 2.155;
+    static double kMulYUhf = 2.69313763794;
     if (i == 0) {
       for (size_t y = 0; y < ysize; ++y) {
         float* BUTTERAUGLI_RESTRICT row_uhf = ps.uhf[0].Row(y);
@@ -1229,9 +1221,9 @@ void DiffPrecompute(const ImageF& xyb, float mul, float bias_arg, ImageF* out) {
 }
 
 // std::log(80.0) / std::log(255.0);
-constexpr float kIntensityTargetNormalizationHack = 0.79079917404;
+constexpr float kIntensityTargetNormalizationHack = 0.79079917404f;
 static const float kInternalGoodQualityThreshold =
-    17.0 * kIntensityTargetNormalizationHack;
+    17.1984479671f * kIntensityTargetNormalizationHack;
 static const float kGlobalScale = 1.0 / kInternalGoodQualityThreshold;
 
 void StoreMin3(const float v, float& min0, float& min1, float& min2) {
@@ -1254,41 +1246,42 @@ void StoreMin3(const float v, float& min0, float& min1, float& min2) {
 void FuzzyErosion(const ImageF& from, ImageF* to) {
   const size_t xsize = from.xsize();
   const size_t ysize = from.ysize();
+  static const int kStep = 3;
   for (size_t y = 0; y < ysize; ++y) {
     for (size_t x = 0; x < xsize; ++x) {
       float min0 = from.Row(y)[x];
       float min1 = 2 * min0;
       float min2 = min1;
-      if (x >= 3) {
-        float v = from.Row(y)[x - 3];
+      if (x >= kStep) {
+        float v = from.Row(y)[x - kStep];
         StoreMin3(v, min0, min1, min2);
-        if (y >= 3) {
-          float v = from.Row(y - 3)[x - 3];
+        if (y >= kStep) {
+          float v = from.Row(y - kStep)[x - kStep];
           StoreMin3(v, min0, min1, min2);
         }
-        if (y < ysize - 3) {
-          float v = from.Row(y + 3)[x - 3];
+        if (y < ysize - kStep) {
+          float v = from.Row(y + kStep)[x - kStep];
           StoreMin3(v, min0, min1, min2);
         }
       }
-      if (x < xsize - 3) {
-        float v = from.Row(y)[x + 3];
+      if (x < xsize - kStep) {
+        float v = from.Row(y)[x + kStep];
         StoreMin3(v, min0, min1, min2);
-        if (y >= 3) {
-          float v = from.Row(y - 3)[x + 3];
+        if (y >= kStep) {
+          float v = from.Row(y - kStep)[x + kStep];
           StoreMin3(v, min0, min1, min2);
         }
-        if (y < ysize - 3) {
-          float v = from.Row(y + 3)[x + 3];
+        if (y < ysize - kStep) {
+          float v = from.Row(y + kStep)[x + kStep];
           StoreMin3(v, min0, min1, min2);
         }
       }
-      if (y >= 3) {
-        float v = from.Row(y - 3)[x];
+      if (y >= kStep) {
+        float v = from.Row(y - kStep)[x];
         StoreMin3(v, min0, min1, min2);
       }
-      if (y < ysize - 3) {
-        float v = from.Row(y + 3)[x];
+      if (y < ysize - kStep) {
+        float v = from.Row(y + kStep)[x];
         StoreMin3(v, min0, min1, min2);
       }
       to->Row(y)[x] = (0.45f * min0 + 0.3f * min1 + 0.25f * min2);
@@ -1395,7 +1388,7 @@ inline float MaskColor(const float color[3], const float mask) {
   return color[0] * mask + color[1] * mask + color[2] * mask;
 }
 
-// Diffmap := sqrt of sum{diff images by multplied by X and Y/B masks}
+// Diffmap := sqrt of sum{diff images by multiplied by X and Y/B masks}
 void CombineChannelsToDiffmap(const ImageF& mask, const Image3F& block_diff_dc,
                               const Image3F& block_diff_ac, float xmul,
                               ImageF* result) {
@@ -1767,9 +1760,7 @@ Image3F* ButteraugliComparator::Temp() const {
   return &temp_;
 }
 
-void ButteraugliComparator::ReleaseTemp() const {
-  temp_in_use_.clear(std::memory_order_release);
-}
+void ButteraugliComparator::ReleaseTemp() const { temp_in_use_.clear(); }
 
 ButteraugliComparator::ButteraugliComparator(const Image3F& rgb0,
                                              const ButteraugliParams& params)
@@ -1881,8 +1872,8 @@ void ButteraugliComparator::DiffmapPsychoImage(const PsychoImage& pi1,
   MaltaDiffMap(pi0_.uhf[1], pi1.uhf[1], wUhfMalta * hf_asymmetry_,
                wUhfMalta / hf_asymmetry_, norm1Uhf, &diffs, &block_diff_ac, 1);
 
-  static const double wUhfMaltaX = 606.229316218;
-  static const double norm1UhfX = 0.358743053213;
+  static const double wUhfMaltaX = 173.5;
+  static const double norm1UhfX = 5.0;
   MaltaDiffMap(pi0_.uhf[0], pi1.uhf[0], wUhfMaltaX * hf_asymmetry_,
                wUhfMaltaX / hf_asymmetry_, norm1UhfX, &diffs, &block_diff_ac,
                0);
@@ -1910,15 +1901,9 @@ void ButteraugliComparator::DiffmapPsychoImage(const PsychoImage& pi1,
                  norm1MfX, &diffs, &block_diff_ac, 0);
 
   static const double wmul[9] = {
-      15,
-      1.50815703118,
-      0,
-      2090.9337651,
-      10.6195433239,
-      16.2176043152,
-      29.2353797994,
-      0.844626970982,
-      0.703646627719,
+      400.0,         1.50815703118,  0,
+      2150.0,        10.6195433239,  16.2176043152,
+      29.2353797994, 0.844626970982, 0.703646627719,
   };
   Image3F block_diff_dc(xsize_, ysize_);
   for (size_t c = 0; c < 3; ++c) {
@@ -2035,15 +2020,16 @@ bool ButteraugliInterface(const Image3F& rgb0, const Image3F& rgb1,
                           const ButteraugliParams& params, ImageF& diffmap,
                           double& diffvalue) {
 #if PROFILER_ENABLED
-  double t0 = Now();
+  auto trace_start = std::chrono::steady_clock::now();
 #endif
   if (!ButteraugliDiffmap(rgb0, rgb1, params, diffmap)) {
     return false;
   }
 #if PROFILER_ENABLED
-  double t1 = Now();
+  auto trace_end = std::chrono::steady_clock::now();
+  std::chrono::duration<double> elapsed = trace_end - trace_start;
   const size_t mp = rgb0.xsize() * rgb0.ysize();
-  printf("diff MP/s %f\n", mp / (t1 - t0) * 1E-6);
+  printf("diff MP/s %f\n", mp / elapsed.count() * 1E-6);
 #endif
   diffvalue = ButteraugliScoreFromDiffmap(diffmap, &params);
   return true;

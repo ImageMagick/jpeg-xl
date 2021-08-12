@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #include "lib/jxl/image.h"
 
@@ -24,6 +15,7 @@
 #include "lib/jxl/base/profiler.h"
 #include "lib/jxl/common.h"
 #include "lib/jxl/image_ops.h"
+#include "lib/jxl/sanitizers.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace jxl {
@@ -123,9 +115,10 @@ void PlaneBase::InitializePadding(const size_t sizeof_t, Padding padding) {
     // There's a bug in msan in clang-6 when handling AVX2 operations. This
     // workaround allows tests to pass on msan, although it is slower and
     // prevents msan warnings from uninitialized images.
-    memset(row, 0, initialize_size);
+    std::fill(row, msan::kSanitizerSentinelByte, initialize_size);
 #else
-    memset(row + valid_size, 0, initialize_size - valid_size);
+    memset(row + valid_size, msan::kSanitizerSentinelByte,
+           initialize_size - valid_size);
 #endif  // clang6
   }
 #endif  // MEMORY_SANITIZER
@@ -270,6 +263,39 @@ float DotProduct(const ImageF& a, const ImageF& b) {
   return sum;
 }
 
+static void DownsampleImage(const ImageF& input, size_t factor,
+                            ImageF* output) {
+  JXL_ASSERT(factor != 1);
+  output->ShrinkTo(DivCeil(input.xsize(), factor),
+                   DivCeil(input.ysize(), factor));
+  size_t in_stride = input.PixelsPerRow();
+  for (size_t y = 0; y < output->ysize(); y++) {
+    float* row_out = output->Row(y);
+    const float* row_in = input.Row(factor * y);
+    for (size_t x = 0; x < output->xsize(); x++) {
+      size_t cnt = 0;
+      float sum = 0;
+      for (size_t iy = 0; iy < factor && iy + factor * y < input.ysize();
+           iy++) {
+        for (size_t ix = 0; ix < factor && ix + factor * x < input.xsize();
+             ix++) {
+          sum += row_in[iy * in_stride + x * factor + ix];
+          cnt++;
+        }
+      }
+      row_out[x] = sum / cnt;
+    }
+  }
+}
+
+void DownsampleImage(ImageF* image, size_t factor) {
+  // Allocate extra space to avoid a reallocation when padding.
+  ImageF downsampled(DivCeil(image->xsize(), factor) + kBlockDim,
+                     DivCeil(image->ysize(), factor) + kBlockDim);
+  DownsampleImage(*image, factor, &downsampled);
+  *image = std::move(downsampled);
+}
+
 void DownsampleImage(Image3F* opsin, size_t factor) {
   JXL_ASSERT(factor != 1);
   // Allocate extra space to avoid a reallocation when padding.
@@ -277,25 +303,8 @@ void DownsampleImage(Image3F* opsin, size_t factor) {
                       DivCeil(opsin->ysize(), factor) + kBlockDim);
   downsampled.ShrinkTo(downsampled.xsize() - kBlockDim,
                        downsampled.ysize() - kBlockDim);
-  size_t in_stride = opsin->PixelsPerRow();
   for (size_t c = 0; c < 3; c++) {
-    for (size_t y = 0; y < downsampled.ysize(); y++) {
-      float* row_out = downsampled.PlaneRow(c, y);
-      const float* row_in = opsin->PlaneRow(c, factor * y);
-      for (size_t x = 0; x < downsampled.xsize(); x++) {
-        size_t cnt = 0;
-        float sum = 0;
-        for (size_t iy = 0; iy < factor && iy + factor * y < opsin->ysize();
-             iy++) {
-          for (size_t ix = 0; ix < factor && ix + factor * x < opsin->xsize();
-               ix++) {
-            sum += row_in[iy * in_stride + x * factor + ix];
-            cnt++;
-          }
-        }
-        row_out[x] = sum / cnt;
-      }
-    }
+    DownsampleImage(opsin->Plane(c), factor, &downsampled.Plane(c));
   }
   *opsin = std::move(downsampled);
 }

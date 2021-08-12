@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #ifndef LIB_JXL_DEC_PARAMS_H_
 #define LIB_JXL_DEC_PARAMS_H_
@@ -33,6 +24,8 @@ struct DecompressParams {
 
   // If true, skip dequant and iDCT and decode to JPEG (only if possible)
   bool keep_dct = false;
+  // If true, render spot colors (otherwise only returned as extra channels)
+  bool render_spotcolors = true;
 
   // These cannot be kOn because they need encoder support.
   Override preview = Override::kDefault;
@@ -52,8 +45,9 @@ struct DecompressParams {
 
   bool operator==(const DecompressParams other) const {
     return check_decompressed_size == other.check_decompressed_size &&
-           keep_dct == other.keep_dct && preview == other.preview &&
-           max_passes == other.max_passes &&
+           keep_dct == other.keep_dct &&
+           render_spotcolors == other.render_spotcolors &&
+           preview == other.preview && max_passes == other.max_passes &&
            max_downsampling == other.max_downsampling &&
            allow_partial_files == other.allow_partial_files &&
            allow_more_progressive_steps == other.allow_more_progressive_steps;

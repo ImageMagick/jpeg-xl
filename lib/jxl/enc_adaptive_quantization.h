@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #ifndef LIB_JXL_ENC_ADAPTIVE_QUANTIZATION_H_
 #define LIB_JXL_ENC_ADAPTIVE_QUANTIZATION_H_
@@ -54,9 +45,12 @@ ImageBundle RoundtripImage(const Image3F& opsin, PassesEncoderState* enc_state,
 // can later be used to make better decisions about ac strategy.
 ImageF InitialQuantField(float butteraugli_target, const Image3F& opsin,
                          const FrameDimensions& frame_dim, ThreadPool* pool,
-                         float rescale, ImageF *initial_quant_mask);
+                         float rescale, ImageF* initial_quant_mask);
 
 float InitialQuantDC(float butteraugli_target);
+
+void AdjustQuantField(const AcStrategyImage& ac_strategy, const Rect& rect,
+                      ImageF* quant_field);
 
 // Returns a quantizer that uses an adjusted version of the provided
 // quant_field. Also computes the dequant_map corresponding to the given

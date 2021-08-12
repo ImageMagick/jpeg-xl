@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #include "lib/jxl/quantizer.h"
 
@@ -77,6 +68,18 @@ void Quantizer::ComputeGlobalScaleAndQuant(float quant_dc, float quant_median,
   RecomputeFromGlobalScale();
 }
 
+void Quantizer::SetQuantFieldRect(const ImageF& qf, const Rect& rect,
+                                  ImageI* JXL_RESTRICT raw_quant_field) {
+  for (size_t y = 0; y < rect.ysize(); ++y) {
+    const float* JXL_RESTRICT row_qf = rect.ConstRow(qf, y);
+    int32_t* JXL_RESTRICT row_qi = rect.Row(raw_quant_field, y);
+    for (size_t x = 0; x < rect.xsize(); ++x) {
+      int val = ClampVal(row_qf[x] * inv_global_scale_ + 0.5f);
+      row_qi[x] = val;
+    }
+  }
+}
+
 void Quantizer::SetQuantField(const float quant_dc, const ImageF& qf,
                               ImageI* JXL_RESTRICT raw_quant_field) {
   JXL_CHECK(SameSize(*raw_quant_field, qf));
@@ -91,14 +94,7 @@ void Quantizer::SetQuantField(const float quant_dc, const ImageF& qf,
   const float quant_median = Median(&data);
   const float quant_median_absd = MedianAbsoluteDeviation(data, quant_median);
   ComputeGlobalScaleAndQuant(quant_dc, quant_median, quant_median_absd);
-  for (size_t y = 0; y < qf.ysize(); ++y) {
-    const float* JXL_RESTRICT row_qf = qf.Row(y);
-    int32_t* JXL_RESTRICT row_qi = raw_quant_field->Row(y);
-    for (size_t x = 0; x < qf.xsize(); ++x) {
-      int val = ClampVal(row_qf[x] * inv_global_scale_ + 0.5f);
-      row_qi[x] = val;
-    }
-  }
+  SetQuantFieldRect(qf, Rect(qf), raw_quant_field);
 }
 
 void Quantizer::SetQuant(float quant_dc, float quant_ac,
@@ -145,10 +141,6 @@ void Quantizer::DumpQuantizationMap(const ImageI& raw_quant_field) const {
     }
     printf("\n");
   }
-}
-
-static constexpr JXL_INLINE int QuantizeValue(float value, float inv_step) {
-  return static_cast<int>(value * inv_step + (value >= 0 ? .5f : -.5f));
 }
 
 }  // namespace jxl

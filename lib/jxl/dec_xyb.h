@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #ifndef LIB_JXL_DEC_XYB_H_
 #define LIB_JXL_DEC_XYB_H_
@@ -20,8 +11,10 @@
 #include "lib/jxl/base/compiler_specific.h"
 #include "lib/jxl/base/data_parallel.h"
 #include "lib/jxl/base/status.h"
+#include "lib/jxl/color_encoding_internal.h"
 #include "lib/jxl/dec_bit_reader.h"
 #include "lib/jxl/image.h"
+#include "lib/jxl/image_metadata.h"
 #include "lib/jxl/opsin_params.h"
 
 namespace jxl {
@@ -33,6 +26,21 @@ struct OpsinParams {
   float opsin_biases_cbrt[4];
   float quant_biases[4];
   void Init(float intensity_target);
+};
+
+struct OutputEncodingInfo {
+  ColorEncoding color_encoding;
+  // Used for Gamma and DCI transfer functions.
+  float inverse_gamma;
+  // Contains an opsin matrix that converts to the primaries of the output
+  // encoding.
+  OpsinParams opsin_params;
+  // default_enc is used for xyb encoded image with ICC profile, in other
+  // cases it has no effect. Use linear sRGB or grayscale if ICC profile is
+  // not matched (not parsed or no matching ColorEncoding exists)
+  Status Set(const CodecMetadata& metadata, const ColorEncoding& default_enc);
+  bool all_default_opsin = true;
+  bool color_encoding_is_original = false;
 };
 
 // Converts `inout` (not padded) from opsin to linear sRGB in-place. Called from
@@ -51,16 +59,12 @@ void OpsinToLinear(const Image3F& opsin, const Rect& rect, ThreadPool* pool,
 // a bias to make the values unsigned).
 void YcbcrToRgb(const Image3F& ycbcr, Image3F* rgb, const Rect& rect);
 
-ImageF UpsampleV2(const ImageF& src, ThreadPool* pool);
-
-// WARNING: this uses unaligned accesses, so the caller must first call
-// src.InitializePaddingForUnalignedAccesses() to avoid msan crashes.
-ImageF UpsampleH2(const ImageF& src, ThreadPool* pool);
-
 bool HasFastXYBTosRGB8();
 void FastXYBTosRGB8(const Image3F& input, const Rect& input_rect,
-                    const Rect& output_buf_rect,
-                    uint8_t* JXL_RESTRICT output_buf, size_t xsize);
+                    const Rect& output_buf_rect, const ImageF* alpha,
+                    const Rect& alpha_rect, bool is_rgba,
+                    uint8_t* JXL_RESTRICT output_buf, size_t xsize,
+                    size_t output_stride);
 
 }  // namespace jxl
 

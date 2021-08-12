@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #ifndef LIB_JXL_NOISE_DISTRIBUTIONS_H_
 #define LIB_JXL_NOISE_DISTRIBUTIONS_H_
@@ -23,6 +14,7 @@
 #include <random>  // distributions
 #include <string>
 
+#include "lib/jxl/common.h"
 #include "lib/jxl/image.h"
 
 namespace jxl {
@@ -41,7 +33,7 @@ struct NoiseNone {
 class NoiseImpulse {
  public:
   explicit NoiseImpulse(const uint32_t threshold) : threshold_(threshold) {}
-  std::string Name() const { return "Impulse" + std::to_string(threshold_); }
+  std::string Name() const { return "Impulse" + ToString(threshold_); }
 
   // Sets pixels to 0 if rand < threshold or 1 if rand > ~threshold.
   template <class Random>
@@ -65,7 +57,7 @@ class NoiseUniform {
  public:
   NoiseUniform(const float min, const float max_exclusive)
       : dist_(min, max_exclusive) {}
-  std::string Name() const { return "Uniform" + std::to_string(dist_.b()); }
+  std::string Name() const { return "Uniform" + ToString(dist_.b()); }
 
   template <class Random>
   float operator()(const float in, Random* rng) const {
@@ -80,9 +72,7 @@ class NoiseUniform {
 class NoiseGaussian {
  public:
   explicit NoiseGaussian(const float stddev) : dist_(0.0f, stddev) {}
-  std::string Name() const {
-    return "Gaussian" + std::to_string(dist_.stddev());
-  }
+  std::string Name() const { return "Gaussian" + ToString(dist_.stddev()); }
 
   template <class Random>
   float operator()(const float in, Random* rng) const {
@@ -97,7 +87,7 @@ class NoiseGaussian {
 class NoisePoisson {
  public:
   explicit NoisePoisson(const double mean) : dist_(mean) {}
-  std::string Name() const { return "Poisson" + std::to_string(dist_.mean()); }
+  std::string Name() const { return "Poisson" + ToString(dist_.mean()); }
 
   template <class Random>
   float operator()(const float in, Random* rng) const {

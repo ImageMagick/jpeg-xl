@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #ifndef LIB_JXL_QUANTIZER_H_
 #define LIB_JXL_QUANTIZER_H_
@@ -101,6 +92,9 @@ class Quantizer {
   // Reciprocal of Scale().
   JXL_INLINE float InvGlobalScale() const { return inv_global_scale_; }
 
+  void SetQuantFieldRect(const ImageF& qf, const Rect& rect,
+                         ImageI* JXL_RESTRICT raw_quant_field);
+
   void SetQuantField(float quant_dc, const ImageF& qf,
                      ImageI* JXL_RESTRICT raw_quant_field);
 
@@ -149,10 +143,10 @@ class Quantizer {
     std::fill(inv_mul_dc_, inv_mul_dc_ + 4, 1);
   }
 
- private:
   void ComputeGlobalScaleAndQuant(float quant_dc, float quant_median,
                                   float quant_median_absd);
 
+ private:
   float mul_dc_[4];
   float inv_mul_dc_[4];
 

@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #include "lib/jxl/enc_cache.h"
 
@@ -91,13 +82,15 @@ void InitializePassesEncoder(const Image3F& opsin, ThreadPool* pool,
     cparams.gaborish = Override::kOff;
     cparams.epf = 0;
     cparams.max_error_mode = true;
+    cparams.resampling = 1;
+    cparams.ec_resampling = 1;
     for (size_t c = 0; c < 3; c++) {
       cparams.max_error[c] = shared.quantizer.MulDC()[c];
     }
     JXL_ASSERT(cparams.progressive_dc > 0);
     cparams.progressive_dc--;
     // The DC frame will have alpha=0. Don't erase its contents.
-    cparams.keep_invisible = true;
+    cparams.keep_invisible = Override::kOn;
     // No EPF or Gaborish in DC frames.
     cparams.epf = 0;
     cparams.gaborish = Override::kOff;
@@ -121,8 +114,7 @@ void InitializePassesEncoder(const Image3F& opsin, ThreadPool* pool,
       std::vector<ImageF> extra_channels;
       extra_channels.reserve(ib.metadata()->extra_channel_info.size());
       for (size_t i = 0; i < ib.metadata()->extra_channel_info.size(); i++) {
-        const auto& eci = ib.metadata()->extra_channel_info[i];
-        extra_channels.emplace_back(eci.Size(ib.xsize()), eci.Size(ib.ysize()));
+        extra_channels.emplace_back(ib.xsize(), ib.ysize());
         // Must initialize the image with data to not affect blending with
         // uninitialized memory.
         // TODO(lode): dc_level must copy and use the real extra channels
@@ -152,6 +144,9 @@ void InitializePassesEncoder(const Image3F& opsin, ThreadPool* pool,
     ImageBundle decoded(&shared.metadata->m);
     std::unique_ptr<PassesDecoderState> dec_state =
         jxl::make_unique<PassesDecoderState>();
+    JXL_CHECK(dec_state->output_encoding_info.Set(
+        *shared.metadata,
+        ColorEncoding::LinearSRGB(shared.metadata->m.color_encoding.IsGray())));
     JXL_CHECK(DecodeFrame({}, dec_state.get(), pool, &br, &decoded,
                           *shared.metadata, /*constraints=*/nullptr));
     // TODO(lode): shared.frame_header.dc_level should be equal to
@@ -169,7 +164,7 @@ void InitializePassesEncoder(const Image3F& opsin, ThreadPool* pool,
       modular_frame_encoder->AddVarDCTDC(
           dc, group_index,
           enc_state->cparams.butteraugli_distance >= 2.0f &&
-              enc_state->cparams.speed_tier != SpeedTier::kFalcon,
+              enc_state->cparams.speed_tier < SpeedTier::kFalcon,
           enc_state);
     };
     RunOnPool(pool, 0, shared.frame_dim.num_dc_groups, ThreadPool::SkipInit(),

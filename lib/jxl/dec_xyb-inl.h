@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 // XYB -> linear sRGB helper function.
 
@@ -87,7 +78,7 @@ HWY_INLINE HWY_MAYBE_UNUSED void XybToRgb(D d, const V opsin_x, const V opsin_y,
   *linear_b = MulAdd(LoadDup128(d, &inverse_matrix[8 * 4]), mixed_b, *linear_b);
 }
 
-bool HasFastXYBTosRGB8() {
+static inline HWY_MAYBE_UNUSED bool HasFastXYBTosRGB8() {
 #if HWY_TARGET == HWY_NEON
   return true;
 #else
@@ -95,9 +86,10 @@ bool HasFastXYBTosRGB8() {
 #endif
 }
 
-void FastXYBTosRGB8(const Image3F& input, const Rect& input_rect,
-                    const Rect& output_buf_rect,
-                    uint8_t* JXL_RESTRICT output_buf, size_t xsize) {
+static inline HWY_MAYBE_UNUSED void FastXYBTosRGB8(
+    const Image3F& input, const Rect& input_rect, const Rect& output_buf_rect,
+    const ImageF* alpha, const Rect& alpha_rect, bool is_rgba,
+    uint8_t* JXL_RESTRICT output_buf, size_t xsize, size_t output_stride) {
   // This function is very NEON-specific. As such, it uses intrinsics directly.
 #if HWY_TARGET == HWY_NEON
   // WARNING: doing fixed point arithmetic correctly is very complicated.
@@ -163,15 +155,15 @@ void FastXYBTosRGB8(const Image3F& input, const Rect& input_rect,
     uint8x16_t pow_low =
         TableLookupBytes(
             Vec128<uint8_t, 16>(vld1q_u8(k2to512powersm1div32_low)),
-            Vec128<uint8_t, 16>(vreinterpretq_s16_u8(exp16)))
+            Vec128<uint8_t, 16>(vreinterpretq_u8_s16(exp16)))
             .raw;
     uint8x16_t pow_high =
         TableLookupBytes(
             Vec128<uint8_t, 16>(vld1q_u8(k2to512powersm1div32_high)),
-            Vec128<uint8_t, 16>(vreinterpretq_s16_u8(exp16)))
+            Vec128<uint8_t, 16>(vreinterpretq_u8_s16(exp16)))
             .raw;
-    int16x8_t pow16 = vreinterpretq_u16_s16(vsliq_n_u16(
-        vreinterpretq_u8_s16(pow_low), vreinterpretq_u8_s16(pow_high), 8));
+    int16x8_t pow16 = vreinterpretq_s16_u16(vsliq_n_u16(
+        vreinterpretq_u16_u8(pow_low), vreinterpretq_u16_u8(pow_high), 8));
 
     // approximation of v * 12.92, divided by 2
     // Note that our input is using 13 mantissa bits instead of 15.
@@ -185,8 +177,11 @@ void FastXYBTosRGB8(const Image3F& input, const Rect& input_rect,
     const float* JXL_RESTRICT row_in_x = input_rect.ConstPlaneRow(input, 0, y);
     const float* JXL_RESTRICT row_in_y = input_rect.ConstPlaneRow(input, 1, y);
     const float* JXL_RESTRICT row_in_b = input_rect.ConstPlaneRow(input, 2, y);
+    const float* JXL_RESTRICT row_in_a =
+        alpha == nullptr ? nullptr : alpha_rect.ConstRow(*alpha, y);
+    size_t cnt = !is_rgba ? 3 : 4;
     size_t base_ptr =
-        3 * (y + output_buf_rect.y0()) * xsize + 3 * output_buf_rect.x0();
+        (y + output_buf_rect.y0()) * output_stride + output_buf_rect.x0() * cnt;
     for (size_t x = 0; x < output_buf_rect.xsize(); x += 8) {
       // Normal ranges for xyb for in-gamut sRGB colors:
       // x: -0.015386 0.028100
@@ -293,9 +288,9 @@ void FastXYBTosRGB8(const Image3F& input, const Rect& input_rect,
       linear_b16 = vqaddq_s16(linear_b16, vqrdmulhq_n_s16(mixed_rmg16, -6525));
 
       // Apply SRGB transfer function.
-      uint16x8_t r = srgb_tf(linear_r16);
-      uint16x8_t g = srgb_tf(linear_g16);
-      uint16x8_t b = srgb_tf(linear_b16);
+      int16x8_t r = srgb_tf(linear_r16);
+      int16x8_t g = srgb_tf(linear_g16);
+      int16x8_t b = srgb_tf(linear_b16);
 
       uint8x8_t r8 =
           vqmovun_s16(vrshrq_n_s16(vsubq_s16(r, vshrq_n_s16(r, 8)), 6));
@@ -305,18 +300,44 @@ void FastXYBTosRGB8(const Image3F& input, const Rect& input_rect,
           vqmovun_s16(vrshrq_n_s16(vsubq_s16(b, vshrq_n_s16(b, 8)), 6));
 
       size_t n = output_buf_rect.xsize() - x;
-      uint8x8x3_t data = {r8, g8, b8};
-      uint8_t* buf = output_buf + base_ptr + 3 * x;
-      if (n >= 8) {
-        vst3_u8(buf, data);
+      if (is_rgba) {
+        float32x4_t a_f32_left =
+            row_in_a ? vld1q_f32(row_in_a + x) : vdupq_n_f32(1.0f);
+        float32x4_t a_f32_right =
+            row_in_a ? vld1q_f32(row_in_a + x +
+                                 (x + 4 < output_buf_rect.xsize() ? 4 : 0))
+                     : vdupq_n_f32(1.0f);
+        int16x4_t a16_left = vqmovn_s32(vcvtq_n_s32_f32(a_f32_left, 8));
+        int16x4_t a16_right = vqmovn_s32(vcvtq_n_s32_f32(a_f32_right, 8));
+        uint8x8_t a8 = vqmovun_s16(vcombine_s16(a16_left, a16_right));
+        uint8_t* buf = output_buf + base_ptr + 4 * x;
+        uint8x8x4_t data = {r8, g8, b8, a8};
+        if (n >= 8) {
+          vst4_u8(buf, data);
+        } else {
+          uint8_t tmp[8 * 4];
+          vst4_u8(tmp, data);
+          memcpy(buf, tmp, n * 4);
+        }
       } else {
-        uint8_t tmp[8 * 3];
-        vst3_u8(tmp, data);
-        memcpy(buf, tmp, n * 3);
+        uint8_t* buf = output_buf + base_ptr + 3 * x;
+        uint8x8x3_t data = {r8, g8, b8};
+        if (n >= 8) {
+          vst3_u8(buf, data);
+        } else {
+          uint8_t tmp[8 * 3];
+          vst3_u8(tmp, data);
+          memcpy(buf, tmp, n * 3);
+        }
       }
     }
   }
 #else
+  (void)input;
+  (void)input_rect;
+  (void)output_buf_rect;
+  (void)output_buf;
+  (void)xsize;
   JXL_ABORT("Unreachable");
 #endif
 }

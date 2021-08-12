@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #ifndef LIB_JXL_ICC_CODEC_H_
 #define LIB_JXL_ICC_CODEC_H_
@@ -25,6 +16,7 @@
 #include "lib/jxl/base/compiler_specific.h"
 #include "lib/jxl/base/padded_bytes.h"
 #include "lib/jxl/base/status.h"
+#include "lib/jxl/dec_ans.h"
 #include "lib/jxl/dec_bit_reader.h"
 #include "lib/jxl/enc_bit_writer.h"
 
@@ -33,6 +25,26 @@ namespace jxl {
 // Should still be called if `icc.empty()` - if so, writes only 1 bit.
 Status WriteICC(const PaddedBytes& icc, BitWriter* JXL_RESTRICT writer,
                 size_t layer, AuxOut* JXL_RESTRICT aux_out);
+
+struct ICCReader {
+  Status Init(BitReader* reader, size_t output_limit);
+  Status Process(BitReader* reader, PaddedBytes* icc);
+  void Reset() {
+    bits_to_skip_ = 0;
+    decompressed_.clear();
+  }
+
+ private:
+  Status CheckEOI(BitReader* reader);
+  size_t i_ = 0;
+  size_t bits_to_skip_ = 0;
+  size_t used_bits_base_ = 0;
+  uint64_t enc_size_ = 0;
+  std::vector<uint8_t> context_map_;
+  ANSCode code_;
+  ANSSymbolReader ans_reader_;
+  PaddedBytes decompressed_;
+};
 
 // `icc` may be empty afterwards - if so, call CreateProfile. Does not append,
 // clears any original data that was in icc.

@@ -1,20 +1,11 @@
-# Copyright (c) the JPEG XL Project
+# Copyright (c) the JPEG XL Project Authors. All rights reserved.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Use of this source code is governed by a BSD-style
+# license that can be found in the LICENSE file.
 
 set(JPEGXL_MAJOR_VERSION 0)
-set(JPEGXL_MINOR_VERSION 3)
-set(JPEGXL_PATCH_VERSION 7)
+set(JPEGXL_MINOR_VERSION 5)
+set(JPEGXL_PATCH_VERSION 0)
 set(JPEGXL_LIBRARY_VERSION
     "${JPEGXL_MAJOR_VERSION}.${JPEGXL_MINOR_VERSION}.${JPEGXL_PATCH_VERSION}")
 
@@ -128,7 +119,7 @@ endif()  #!MSVC
 include(jxl.cmake)
 
 # Other libraries outside the core jxl library.
-#include(jxl_extras.cmake)
+include(jxl_extras.cmake)
 include(jxl_threads.cmake)
 
 # Install all the library headers from the source and the generated ones. There
@@ -138,6 +129,9 @@ install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/jxl
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/include/jxl
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+
+# Profiler for libjxl
+include(jxl_profiler.cmake)
 
 if(BUILD_TESTING)
 # Unittests
@@ -149,8 +143,5 @@ include(jxl_tests.cmake)
 
 # Google benchmark for the jxl library
 include(jxl_benchmark.cmake)
-
-# Profiler for libjxl
-include(jxl_profiler.cmake)
 
 endif()  # BUILD_TESTING

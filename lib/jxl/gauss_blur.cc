@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #include "lib/jxl/gauss_blur.h"
 
@@ -503,7 +494,7 @@ hwy::AlignedUniquePtr<RecursiveGaussian> CreateRecursiveGaussian(double sigma) {
   auto rg = hwy::MakeUniqueAligned<RecursiveGaussian>();
   constexpr double kPi = 3.141592653589793238;
 
-  const double radius = std::round(3.2795 * sigma + 0.2546);  // (57), "N"
+  const double radius = roundf(3.2795 * sigma + 0.2546);  // (57), "N"
 
   // Table I, first row
   const double pi_div_2r = kPi / (2.0 * radius);
@@ -540,7 +531,7 @@ hwy::AlignedUniquePtr<RecursiveGaussian> CreateRecursiveGaussian(double sigma) {
   double A[9] = {p_1,     p_3,     p_5,  //
                  r_1,     r_3,     r_5,  //  (56)
                  zeta_15, zeta_35, 1};
-  Inv3x3Matrix(A);
+  JXL_CHECK(Inv3x3Matrix(A));
   const double gamma[3] = {1, radius * radius - sigma * sigma,  // (55)
                            zeta_15 * rho[0] + zeta_35 * rho[1] + rho[2]};
   double beta[3];

@@ -1,21 +1,14 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #ifndef LIB_JXL_TEST_UTILS_H_
 #define LIB_JXL_TEST_UTILS_H_
 
 // Macros and functions useful for tests.
+
+#include <random>
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -24,6 +17,7 @@
 #include "lib/jxl/base/data_parallel.h"
 #include "lib/jxl/codec_in_out.h"
 #include "lib/jxl/color_encoding_internal.h"
+#include "lib/jxl/common.h"  // JPEGXL_ENABLE_TRANSCODE_JPEG
 #include "lib/jxl/dec_file.h"
 #include "lib/jxl/dec_params.h"
 #include "lib/jxl/enc_external_image.h"
@@ -35,6 +29,12 @@
 #else
 #define JXL_SLOW_TEST(X) X
 #endif  // JXL_DISABLE_SLOW_TESTS
+
+#if JPEGXL_ENABLE_TRANSCODE_JPEG
+#define JXL_TRANSCODE_JPEG_TEST(X) X
+#else
+#define JXL_TRANSCODE_JPEG_TEST(X) DISABLED_##X
+#endif  // JPEGXL_ENABLE_TRANSCODE_JPEG
 
 #ifdef THREAD_SANITIZER
 #define JXL_TSAN_SLOW_TEST(X) DISABLED_##X
@@ -59,6 +59,10 @@ void JxlBasicInfoSetFromPixelFormat(JxlBasicInfo* basic_info,
     case JXL_TYPE_FLOAT:
       basic_info->bits_per_sample = 32;
       basic_info->exponent_bits_per_sample = 8;
+      break;
+    case JXL_TYPE_FLOAT16:
+      basic_info->bits_per_sample = 16;
+      basic_info->exponent_bits_per_sample = 5;
       break;
     case JXL_TYPE_UINT8:
       basic_info->bits_per_sample = 8;
@@ -269,7 +273,37 @@ std::vector<ColorEncodingDescriptor> AllEncodings() {
 std::vector<uint8_t> GetSomeTestImage(size_t xsize, size_t ysize,
                                       size_t num_channels, uint16_t seed) {
   // Cause more significant image difference for successive seeds.
-  seed = static_cast<uint16_t>(seed * 77);
+  std::mt19937 std_rng(seed);
+  std::uniform_int_distribution<uint16_t> std_distr(0, 65535);
+
+  // Returns random integer in interval (0, max_value - 1)
+  auto rng = [&std_rng, &std_distr](size_t max_value) -> size_t {
+    return static_cast<size_t>(std_distr(std_rng) / 65536.0f * max_value);
+  };
+
+  // Dark background gradient color
+  uint16_t r0 = rng(32768);
+  uint16_t g0 = rng(32768);
+  uint16_t b0 = rng(32768);
+  uint16_t a0 = rng(32768);
+  uint16_t r1 = rng(32768);
+  uint16_t g1 = rng(32768);
+  uint16_t b1 = rng(32768);
+  uint16_t a1 = rng(32768);
+
+  // Circle with different color
+  size_t circle_x = rng(xsize);
+  size_t circle_y = rng(ysize);
+  size_t circle_r = rng(std::min(xsize, ysize));
+
+  // Rectangle with random noise
+  size_t rect_x0 = rng(xsize);
+  size_t rect_y0 = rng(ysize);
+  size_t rect_x1 = rng(xsize);
+  size_t rect_y1 = rng(ysize);
+  if (rect_x1 < rect_x0) std::swap(rect_x0, rect_y1);
+  if (rect_y1 < rect_y0) std::swap(rect_y0, rect_y1);
+
   size_t num_pixels = xsize * ysize;
   // 16 bits per channel, big endian, 4 channels
   std::vector<uint8_t> pixels(num_pixels * num_channels * 2);
@@ -277,14 +311,22 @@ std::vector<uint8_t> GetSomeTestImage(size_t xsize, size_t ysize,
   // can be compared after roundtrip.
   for (size_t y = 0; y < ysize; y++) {
     for (size_t x = 0; x < xsize; x++) {
-      uint16_t r = (65535 - x * y) ^ seed;
-      uint16_t g = (x << 8) + y + seed;
-      uint16_t b = (y << 8) + x * seed;
-      uint16_t a = 32768 + x * 256 - y;
+      uint16_t r = r0 * (ysize - y - 1) / ysize + r1 * y / ysize;
+      uint16_t g = g0 * (ysize - y - 1) / ysize + g1 * y / ysize;
+      uint16_t b = b0 * (ysize - y - 1) / ysize + b1 * y / ysize;
+      uint16_t a = a0 * (ysize - y - 1) / ysize + a1 * y / ysize;
       // put some shape in there for visual debugging
-      if (x * x + y * y < 1000) {
-        std::swap(r, g);
-        b = 0;
+      if ((x - circle_x) * (x - circle_x) + (y - circle_y) * (y - circle_y) <
+          circle_r * circle_r) {
+        r = (65535 - x * y) ^ seed;
+        g = (x << 8) + y + seed;
+        b = (y << 8) + x * seed;
+        a = 32768 + x * 256 - y;
+      } else if (x > rect_x0 && x < rect_x1 && y > rect_y0 && y < rect_y1) {
+        r = rng(65536);
+        g = rng(65536);
+        b = rng(65536);
+        a = rng(65536);
       }
       size_t i = (y * xsize + x) * 2 * num_channels;
       pixels[i + 0] = (r >> 8);
@@ -330,6 +372,17 @@ jxl::CodecInOut SomeTestImageToCodecInOut(const std::vector<uint8_t>& buf,
 }
 
 }  // namespace test
+
+bool operator==(const jxl::PaddedBytes& a, const jxl::PaddedBytes& b) {
+  if (a.size() != b.size()) return false;
+  if (memcmp(a.data(), b.data(), a.size()) != 0) return false;
+  return true;
+}
+
+// Allow using EXPECT_EQ on jxl::PaddedBytes
+bool operator!=(const jxl::PaddedBytes& a, const jxl::PaddedBytes& b) {
+  return !(a == b);
+}
 }  // namespace jxl
 
 #endif  // LIB_JXL_TEST_UTILS_H_

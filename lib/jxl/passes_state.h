@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #ifndef LIB_JXL_PASSES_STATE_H_
 #define LIB_JXL_PASSES_STATE_H_
@@ -64,8 +55,6 @@ struct PassesSharedState {
 
   ColorCorrelationMap cmap;
 
-  OpsinParams opsin_params;
-
   ImageFeatures image_features;
 
   // Memory area for storing coefficient orders.
@@ -92,7 +81,7 @@ struct PassesSharedState {
     // now, as they are stored in a vector and thus may be moved. Fix this.
     ImageBundle* JXL_RESTRICT frame = &storage;
     // ImageBundle doesn't yet have a simple way to state it is in XYB.
-    bool ib_is_in_xyb = true;
+    bool ib_is_in_xyb = false;
   } reference_frames[4] = {};
 
   // Number of pre-clustered set of histograms (with the same ctx map), per

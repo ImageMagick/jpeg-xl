@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #include <algorithm>
 
@@ -19,11 +10,35 @@
 #include "lib/jxl/chroma_from_luma.h"
 #include "lib/jxl/common.h"
 #include "lib/jxl/dct_scales.h"
+#include "lib/jxl/enc_ans.h"
 #include "lib/jxl/entropy_coder.h"
 #include "lib/jxl/opsin_params.h"
 #include "lib/jxl/splines.h"
 
 namespace jxl {
+
+class QuantizedSplineEncoder {
+ public:
+  // Only call if HasAny().
+  static void Tokenize(const QuantizedSpline& spline,
+                       std::vector<Token>* const tokens) {
+    tokens->emplace_back(kNumControlPointsContext,
+                         spline.control_points_.size());
+    for (const auto& point : spline.control_points_) {
+      tokens->emplace_back(kControlPointsContext, PackSigned(point.first));
+      tokens->emplace_back(kControlPointsContext, PackSigned(point.second));
+    }
+    const auto encode_dct = [tokens](const int dct[32]) {
+      for (int i = 0; i < 32; ++i) {
+        tokens->emplace_back(kDCTContext, PackSigned(dct[i]));
+      }
+    };
+    for (int c = 0; c < 3; ++c) {
+      encode_dct(spline.color_dct_[c]);
+    }
+    encode_dct(spline.sigma_dct_);
+  }
+};
 
 namespace {
 
@@ -32,8 +47,8 @@ void EncodeAllStartingPoints(const std::vector<Spline::Point>& points,
   int64_t last_x = 0;
   int64_t last_y = 0;
   for (size_t i = 0; i < points.size(); i++) {
-    const int64_t x = std::lround(points[i].x);
-    const int64_t y = std::lround(points[i].y);
+    const int64_t x = lroundf(points[i].x);
+    const int64_t y = lroundf(points[i].y);
     if (i == 0) {
       tokens->emplace_back(kStartingPositionContext, x);
       tokens->emplace_back(kStartingPositionContext, y);
@@ -63,7 +78,7 @@ void EncodeSplines(const Splines& splines, BitWriter* writer,
                          PackSigned(splines.GetQuantizationAdjustment()));
 
   for (const QuantizedSpline& spline : quantized_splines) {
-    spline.Tokenize(&tokens[0]);
+    QuantizedSplineEncoder::Tokenize(spline, &tokens[0]);
   }
 
   EntropyEncodingData codes;
@@ -72,4 +87,10 @@ void EncodeSplines(const Splines& splines, BitWriter* writer,
                            &context_map, writer, layer, aux_out);
   WriteTokens(tokens[0], codes, context_map, writer, layer, aux_out);
 }
+
+Splines FindSplines(const Image3F& opsin) {
+  // TODO: implement spline detection.
+  return {};
+}
+
 }  // namespace jxl

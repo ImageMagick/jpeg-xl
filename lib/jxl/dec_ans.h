@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #ifndef LIB_JXL_DEC_ANS_H_
 #define LIB_JXL_DEC_ANS_H_
@@ -26,11 +17,13 @@
 
 #include "lib/jxl/ans_common.h"
 #include "lib/jxl/ans_params.h"
+#include "lib/jxl/base/bits.h"
 #include "lib/jxl/base/byte_order.h"
 #include "lib/jxl/base/cache_aligned.h"
 #include "lib/jxl/base/compiler_specific.h"
 #include "lib/jxl/dec_bit_reader.h"
 #include "lib/jxl/dec_huffman.h"
+#include "lib/jxl/field_encodings.h"
 
 namespace jxl {
 
@@ -275,7 +268,7 @@ class ANSSymbolReader {
                  low;
     // TODO(eustas): mark BitReader as unhealthy if nbits > 29 or ret does not
     //               fit uint32_t
-    return ret;
+    return static_cast<uint32_t>(ret);
   }
 
   // Takes a *clustered* idx.
@@ -314,6 +307,8 @@ class ANSSymbolReader {
         size_t to_fill = std::min<size_t>(num_to_copy_, kWindowSize);
         memset(lz77_window_, 0, to_fill * sizeof(lz77_window_[0]));
       }
+      // TODO(eustas): overflow; mark BitReader as unhealthy
+      if (num_to_copy_ < lz77_min_length_) return 0;
       return ReadHybridUintClustered(ctx, br);  // will trigger a copy.
     }
     size_t ret = ReadHybridUintConfig(configs[ctx], token, br);
@@ -347,6 +342,55 @@ class ANSSymbolReader {
       }
     }
     return true;
+  }
+
+  static constexpr size_t kMaxCheckpointInterval = 512;
+  struct Checkpoint {
+    uint32_t state;
+    uint32_t num_to_copy;
+    uint32_t copy_pos;
+    uint32_t num_decoded;
+    uint32_t lz77_window[kMaxCheckpointInterval];
+  };
+  void Save(Checkpoint* checkpoint) {
+    checkpoint->state = state_;
+    checkpoint->num_decoded = num_decoded_;
+    checkpoint->num_to_copy = num_to_copy_;
+    checkpoint->copy_pos = copy_pos_;
+    if (lz77_window_) {
+      size_t win_start = num_decoded_ & kWindowMask;
+      size_t win_end = (num_decoded_ + kMaxCheckpointInterval) & kWindowMask;
+      if (win_end > win_start) {
+        memcpy(checkpoint->lz77_window, lz77_window_ + win_start,
+               (win_end - win_start) * sizeof(*lz77_window_));
+      } else {
+        memcpy(checkpoint->lz77_window, lz77_window_ + win_start,
+               (kWindowSize - win_start) * sizeof(*lz77_window_));
+        memcpy(checkpoint->lz77_window + (kWindowSize - win_start),
+               lz77_window_, win_end * sizeof(*lz77_window_));
+      }
+    }
+  }
+  void Restore(const Checkpoint& checkpoint) {
+    state_ = checkpoint.state;
+    JXL_DASSERT(num_decoded_ <=
+                checkpoint.num_decoded + kMaxCheckpointInterval);
+    num_decoded_ = checkpoint.num_decoded;
+    num_to_copy_ = checkpoint.num_to_copy;
+    copy_pos_ = checkpoint.copy_pos;
+    if (lz77_window_) {
+      size_t win_start = num_decoded_ & kWindowMask;
+      size_t win_end = (num_decoded_ + kMaxCheckpointInterval) & kWindowMask;
+      if (win_end > win_start) {
+        memcpy(lz77_window_ + win_start, checkpoint.lz77_window,
+               (win_end - win_start) * sizeof(*lz77_window_));
+      } else {
+        memcpy(lz77_window_ + win_start, checkpoint.lz77_window,
+               (kWindowSize - win_start) * sizeof(*lz77_window_));
+        memcpy(lz77_window_, checkpoint.lz77_window + (kWindowSize - win_start),
+               win_end * sizeof(*lz77_window_));
+      }
+    }
   }
 
  private:

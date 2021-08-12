@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #ifndef LIB_JXL_IMAGE_BUNDLE_H_
 #define LIB_JXL_IMAGE_BUNDLE_H_
@@ -145,21 +136,22 @@ class ImageBundle {
            c_current_.primaries == Primaries::kSRGB && c_current_.tf.IsLinear();
   }
 
-  // Transforms color to c_desired and sets c_current to c_desired. Alpha and
-  // metadata remains unchanged.
-  Status TransformTo(const ColorEncoding& c_desired,
-                     ThreadPool* pool = nullptr);
-
   // Set the c_current profile without doing any transformation, e.g. if the
   // transformation was already applied.
   void OverrideProfile(const ColorEncoding& new_c_current) {
     c_current_ = new_c_current;
   }
 
+  // TODO(lode): TransformTo and CopyTo are implemented in enc_image_bundle.cc,
+  // move these functions out of this header file and class, to
+  // enc_image_bundle.h.
+
+  // Transforms color to c_desired and sets c_current to c_desired. Alpha and
+  // metadata remains unchanged.
+  Status TransformTo(const ColorEncoding& c_desired,
+                     ThreadPool* pool = nullptr);
   // Copies this:rect, converts to c_desired, and allocates+fills out.
   Status CopyTo(const Rect& rect, const ColorEncoding& c_desired, Image3B* out,
-                ThreadPool* pool = nullptr) const;
-  Status CopyTo(const Rect& rect, const ColorEncoding& c_desired, Image3U* out,
                 ThreadPool* pool = nullptr) const;
   Status CopyTo(const Rect& rect, const ColorEncoding& c_desired, Image3F* out,
                 ThreadPool* pool = nullptr) const;
@@ -180,6 +172,10 @@ class ImageBundle {
     const ExtraChannelInfo* eci = metadata_->Find(ExtraChannel::kAlpha);
     return (eci == nullptr) ? false : eci->alpha_associated;
   }
+  // Premultiply alpha (if it isn't already premultiplied)
+  void PremultiplyAlpha();
+  // Unpremultiply alpha (if it isn't already non-premultiplied)
+  void UnpremultiplyAlpha();
   const ImageF& alpha() const;
   ImageF* alpha();
 
@@ -209,7 +205,13 @@ class ImageBundle {
 
   // Returns true if image does or will represent quantized DCT-8 coefficients,
   // stored in 8x8 pixel regions.
-  bool IsJPEG() const { return jpeg_data != nullptr; }
+  bool IsJPEG() const {
+#if JPEGXL_ENABLE_TRANSCODE_JPEG
+    return jpeg_data != nullptr;
+#else   // JPEGXL_ENABLE_TRANSCODE_JPEG
+    return false;
+#endif  // JPEGXL_ENABLE_TRANSCODE_JPEG
+  }
 
   std::unique_ptr<jpeg::JPEGData> jpeg_data;
   // these fields are used to signal the input JPEG color space
@@ -223,6 +225,7 @@ class ImageBundle {
   uint32_t duration = 0;
   bool use_for_next_frame = false;
   bool blend = false;
+  BlendMode blendmode = BlendMode::kBlend;
   std::string name;
 
  private:

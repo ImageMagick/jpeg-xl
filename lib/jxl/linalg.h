@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #ifndef LIB_JXL_LINALG_H_
 #define LIB_JXL_LINALG_H_
@@ -175,7 +166,7 @@ void ComputeQRFactorization(const ImageD& A, ImageD* JXL_RESTRICT Q,
 
 // Inverts a 3x3 matrix in place
 template <typename T>
-void Inv3x3Matrix(T* matrix) {
+Status Inv3x3Matrix(T* matrix) {
   // Intermediate computation is done in double precision.
   double temp[9];
   temp[0] = static_cast<double>(matrix[4]) * matrix[8] -
@@ -196,11 +187,15 @@ void Inv3x3Matrix(T* matrix) {
             static_cast<double>(matrix[0]) * matrix[7];
   temp[8] = static_cast<double>(matrix[0]) * matrix[4] -
             static_cast<double>(matrix[1]) * matrix[3];
-  double idet =
-      1.0 / (matrix[0] * temp[0] + matrix[1] * temp[3] + matrix[2] * temp[6]);
+  double det = matrix[0] * temp[0] + matrix[1] * temp[3] + matrix[2] * temp[6];
+  if (std::abs(det) < 1e-10) {
+    return JXL_FAILURE("Matrix determinant is too close to 0");
+  }
+  double idet = 1.0 / det;
   for (int i = 0; i < 9; i++) {
     matrix[i] = temp[i] * idet;
   }
+  return true;
 }
 
 // Solves system of linear equations A * X = B using the conjugate gradient

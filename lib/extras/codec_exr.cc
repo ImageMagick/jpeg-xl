@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #include "lib/extras/codec_exr.h"
 
@@ -31,6 +22,12 @@ namespace {
 
 namespace OpenEXR = OPENEXR_IMF_NAMESPACE;
 namespace Imath = IMATH_NAMESPACE;
+
+// OpenEXR::Int64 is deprecated in favor of using uint64_t directly, but using
+// uint64_t as recommended causes build failures with previous OpenEXR versions
+// on macOS, where the definition for OpenEXR::Int64 was actually not equivalent
+// to uint64_t. This alternative should work in all cases.
+using ExrInt64 = decltype(std::declval<OpenEXR::IStream>().tellg());
 
 constexpr int kExrBitsPerSample = 16;
 constexpr int kExrAlphaBits = 16;
@@ -90,8 +87,8 @@ class InMemoryIStream : public OpenEXR::IStream {
     return pos_ < bytes_.size();
   }
 
-  OpenEXR::Int64 tellg() override { return pos_; }
-  void seekg(const OpenEXR::Int64 pos) override {
+  ExrInt64 tellg() override { return pos_; }
+  void seekg(const ExrInt64 pos) override {
     JXL_ASSERT(pos + 1 <= bytes_.size());
     pos_ = pos;
   }
@@ -115,8 +112,8 @@ class InMemoryOStream : public OpenEXR::OStream {
     pos_ += n;
   }
 
-  OpenEXR::Int64 tellp() override { return pos_; }
-  void seekp(const OpenEXR::Int64 pos) override {
+  ExrInt64 tellp() override { return pos_; }
+  void seekp(const ExrInt64 pos) override {
     if (bytes_.size() + 1 < pos) {
       bytes_.resize(pos - 1);
     }

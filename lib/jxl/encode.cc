@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #include "jxl/encode.h"
 
@@ -41,42 +32,6 @@
 
 namespace jxl {
 
-Status ConvertExternalToInternalColorEncoding(const JxlColorEncoding& external,
-                                              ColorEncoding* internal) {
-  internal->SetColorSpace(static_cast<ColorSpace>(external.color_space));
-
-  CIExy wp;
-  wp.x = external.white_point_xy[0];
-  wp.y = external.white_point_xy[1];
-  JXL_RETURN_IF_ERROR(internal->SetWhitePoint(wp));
-
-  if (external.color_space == JXL_COLOR_SPACE_RGB ||
-      external.color_space == JXL_COLOR_SPACE_UNKNOWN) {
-    internal->primaries = static_cast<Primaries>(external.primaries);
-    PrimariesCIExy primaries;
-    primaries.r.x = external.primaries_red_xy[0];
-    primaries.r.y = external.primaries_red_xy[1];
-    primaries.g.x = external.primaries_green_xy[0];
-    primaries.g.y = external.primaries_green_xy[1];
-    primaries.b.x = external.primaries_blue_xy[0];
-    primaries.b.y = external.primaries_blue_xy[1];
-    JXL_RETURN_IF_ERROR(internal->SetPrimaries(primaries));
-  }
-  CustomTransferFunction tf;
-  if (external.transfer_function == JXL_TRANSFER_FUNCTION_GAMMA) {
-    JXL_RETURN_IF_ERROR(tf.SetGamma(external.gamma));
-  } else {
-    tf.SetTransferFunction(
-        static_cast<TransferFunction>(external.transfer_function));
-  }
-  internal->tf = tf;
-
-  internal->rendering_intent =
-      static_cast<RenderingIntent>(external.rendering_intent);
-
-  return true;
-}
-
 }  // namespace jxl
 
 uint32_t JxlEncoderVersion(void) {
@@ -89,9 +44,12 @@ JxlEncoderStatus JxlEncoderStruct::RefillOutputByteQueue() {
       std::move(input_frame_queue[0]);
   input_frame_queue.erase(input_frame_queue.begin());
 
+  // TODO(zond): If the frame queue is empty and the input_closed is true,
+  // then mark this frame as the last.
+
   jxl::BitWriter writer;
 
-  if (!wrote_headers) {
+  if (!wrote_bytes) {
     if (use_container) {
       output_byte_queue.insert(
           output_byte_queue.end(), jxl::kContainerHeader,
@@ -102,8 +60,6 @@ JxlEncoderStatus JxlEncoderStruct::RefillOutputByteQueue() {
         output_byte_queue.insert(output_byte_queue.end(), jpeg_metadata.begin(),
                                  jpeg_metadata.end());
       }
-      jxl::AppendBoxHeader(jxl::MakeBoxType("jxlc"), 0, true,
-                           &output_byte_queue);
     }
     if (!WriteHeaders(&metadata, &writer, nullptr)) {
       return JXL_ENC_ERROR;
@@ -118,16 +74,14 @@ JxlEncoderStatus JxlEncoderStruct::RefillOutputByteQueue() {
 
     // TODO(lode): preview should be added here if a preview image is added
 
-    wrote_headers = true;
+	// Each frame should start on byte boundaries.
+	writer.ZeroPadToByte();
   }
-
-  // Each frame should start on byte boundaries.
-  writer.ZeroPadToByte();
 
   // TODO(zond): Handle progressive mode like EncodeFile does it.
   // TODO(zond): Handle animation like EncodeFile does it, by checking if
-  //             JxlEncoderCloseInput has been called (to see if it's the
-  //             last animation frame).
+  //             JxlEncoderCloseInput has been called and if the frame queue is
+  //             empty (to see if it's the last animation frame).
 
   if (metadata.m.xyb_encoded) {
     input_frame->option_values.cparams.color_transform =
@@ -147,18 +101,53 @@ JxlEncoderStatus JxlEncoderStruct::RefillOutputByteQueue() {
   }
 
   jxl::PaddedBytes bytes = std::move(writer).TakeBytes();
+
+  if (use_container && !wrote_bytes) {
+    if (input_closed && input_frame_queue.empty()) {
+      jxl::AppendBoxHeader(jxl::MakeBoxType("jxlc"), bytes.size(),
+                           /*unbounded=*/false, &output_byte_queue);
+    } else {
+      jxl::AppendBoxHeader(jxl::MakeBoxType("jxlc"), 0, /*unbounded=*/true,
+                           &output_byte_queue);
+    }
+  }
+
   output_byte_queue.insert(output_byte_queue.end(), bytes.data(),
                            bytes.data() + bytes.size());
+  wrote_bytes = true;
+
   last_used_cparams = input_frame->option_values.cparams;
+
   return JXL_ENC_SUCCESS;
 }
 
 JxlEncoderStatus JxlEncoderSetColorEncoding(JxlEncoder* enc,
                                             const JxlColorEncoding* color) {
+  if (enc->color_encoding_set) {
+    // Already set
+    return JXL_ENC_ERROR;
+  }
   if (!jxl::ConvertExternalToInternalColorEncoding(
           *color, &enc->metadata.m.color_encoding)) {
     return JXL_ENC_ERROR;
   }
+  enc->color_encoding_set = true;
+  return JXL_ENC_SUCCESS;
+}
+
+JxlEncoderStatus JxlEncoderSetICCProfile(JxlEncoder* enc,
+                                         const uint8_t* icc_profile,
+                                         size_t size) {
+  if (enc->color_encoding_set) {
+    // Already set
+    return JXL_ENC_ERROR;
+  }
+  jxl::PaddedBytes icc;
+  icc.assign(icc_profile, icc_profile + size);
+  if (!enc->metadata.m.color_encoding.SetICCRaw(std::move(icc))) {
+    return JXL_ENC_ERROR;
+  }
+  enc->color_encoding_set = true;
   return JXL_ENC_SUCCESS;
 }
 
@@ -204,6 +193,7 @@ JxlEncoderStatus JxlEncoderSetBasicInfo(JxlEncoder* enc,
       break;
   }
   enc->metadata.m.xyb_encoded = !info->uses_original_profile;
+  enc->basic_info_set = true;
   return JXL_ENC_SUCCESS;
 }
 
@@ -258,7 +248,6 @@ JxlEncoder* JxlEncoderCreate(const JxlMemoryManager* memory_manager) {
   if (!alloc) return nullptr;
   JxlEncoder* enc = new (alloc) JxlEncoder();
   enc->memory_manager = local_memory_manager;
-  enc->wrote_headers = false;
 
   return enc;
 }
@@ -268,9 +257,12 @@ void JxlEncoderReset(JxlEncoder* enc) {
   enc->input_frame_queue.clear();
   enc->encoder_options.clear();
   enc->output_byte_queue.clear();
-  enc->wrote_headers = false;
+  enc->wrote_bytes = false;
   enc->metadata = jxl::CodecMetadata();
   enc->last_used_cparams = jxl::CompressParams();
+  enc->input_closed = false;
+  enc->basic_info_set = false;
+  enc->color_encoding_set = false;
 }
 
 void JxlEncoderDestroy(JxlEncoder* enc) {
@@ -307,16 +299,38 @@ JxlEncoderStatus JxlEncoderSetParallelRunner(JxlEncoder* enc,
 
 JxlEncoderStatus JxlEncoderAddJPEGFrame(const JxlEncoderOptions* options,
                                         const uint8_t* buffer, size_t size) {
-  // TODO(zond): Return error if basic info or color encoding isn't set.
-  // TODO(zond): Return error if the input has been closed.
-
-  if (options->enc->metadata.m.xyb_encoded) {
-    // Can't XYB encode a lossless JPEG.
+  if (options->enc->input_closed) {
     return JXL_ENC_ERROR;
   }
 
   jxl::CodecInOut io;
   if (!jxl::jpeg::DecodeImageJPG(jxl::Span<const uint8_t>(buffer, size), &io)) {
+    return JXL_ENC_ERROR;
+  }
+
+  if (!options->enc->color_encoding_set) {
+    if (!SetColorEncodingFromJpegData(
+            *io.Main().jpeg_data, &options->enc->metadata.m.color_encoding)) {
+      return JXL_ENC_ERROR;
+    }
+  }
+
+  if (!options->enc->basic_info_set) {
+    JxlBasicInfo basic_info;
+    basic_info.exponent_bits_per_sample = 0;
+    basic_info.bits_per_sample = 8;
+    basic_info.alpha_bits = 0;
+    basic_info.alpha_exponent_bits = 0;
+    basic_info.xsize = io.Main().jpeg_data->width;
+    basic_info.ysize = io.Main().jpeg_data->height;
+    basic_info.uses_original_profile = true;
+    if (JxlEncoderSetBasicInfo(options->enc, &basic_info) != JXL_ENC_SUCCESS) {
+      return JXL_ENC_ERROR;
+    }
+  }
+
+  if (options->enc->metadata.m.xyb_encoded) {
+    // Can't XYB encode a lossless JPEG.
     return JXL_ENC_ERROR;
   }
 
@@ -356,8 +370,14 @@ JxlEncoderStatus JxlEncoderAddJPEGFrame(const JxlEncoderOptions* options,
 JxlEncoderStatus JxlEncoderAddImageFrame(const JxlEncoderOptions* options,
                                          const JxlPixelFormat* pixel_format,
                                          const void* buffer, size_t size) {
-  // TODO(zond): Return error if basic info or color encoding isn't set.
-  // TODO(zond): Return error if the input has been closed.
+  if (!options->enc->basic_info_set || !options->enc->color_encoding_set) {
+    return JXL_ENC_ERROR;
+  }
+
+  if (options->enc->input_closed) {
+    return JXL_ENC_ERROR;
+  }
+
   auto queued_frame = jxl::MemoryManagerMakeUnique<jxl::JxlEncoderQueuedFrame>(
       &options->enc->memory_manager,
       // JxlEncoderQueuedFrame is a struct with no constructors, so we use the
@@ -365,6 +385,11 @@ JxlEncoderStatus JxlEncoderAddImageFrame(const JxlEncoderOptions* options,
       jxl::JxlEncoderQueuedFrame{options->values,
                                  jxl::ImageBundle(&options->enc->metadata.m)});
   if (!queued_frame) {
+    return JXL_ENC_ERROR;
+  }
+
+  if (pixel_format->data_type == JXL_TYPE_FLOAT16) {
+    // float16 is currently only supported in the decoder
     return JXL_ENC_ERROR;
   }
 
@@ -395,9 +420,7 @@ JxlEncoderStatus JxlEncoderAddImageFrame(const JxlEncoderOptions* options,
   return JXL_ENC_SUCCESS;
 }
 
-void JxlEncoderCloseInput(JxlEncoder* enc) {
-  // TODO(zond): Make this function mark the most recent frame as the last.
-}
+void JxlEncoderCloseInput(JxlEncoder* enc) { enc->input_closed = true; }
 
 JxlEncoderStatus JxlEncoderProcessOutput(JxlEncoder* enc, uint8_t** next_out,
                                          size_t* avail_out) {

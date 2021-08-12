@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #include "lib/jxl/jpeg/dec_jpeg_data_writer.h"
 
@@ -490,6 +481,7 @@ bool EncodeDCTBlockSequential(const coeff_t* coeffs,
   }
   int dc_nbits = (temp == 0) ? 0 : (FloorLog2Nonzero<uint32_t>(temp) + 1);
   WriteBits(bw, dc_huff.depth[dc_nbits], dc_huff.code[dc_nbits]);
+  if (dc_nbits >= 12) return false;
   if (dc_nbits > 0) {
     WriteBits(bw, dc_nbits, temp2 & ((1u << dc_nbits) - 1));
   }
@@ -510,6 +502,7 @@ bool EncodeDCTBlockSequential(const coeff_t* coeffs,
       r -= 16;
     }
     int ac_nbits = FloorLog2Nonzero<uint32_t>(temp) + 1;
+    if (ac_nbits >= 16) return false;
     int symbol = (r << 4u) + ac_nbits;
     WriteBits(bw, ac_huff.depth[symbol], ac_huff.code[symbol]);
     WriteBits(bw, ac_nbits, temp2 & ((1 << ac_nbits) - 1));
@@ -709,23 +702,9 @@ SerializationStatus JXL_NOINLINE DoEncodeScan(const JPEGData& jpg,
   // "Non-interleaved" means color data comes in separate scans, in other words
   // each scan can contain only one color component.
   const bool is_interleaved = (scan_info.num_components > 1);
-  const JPEGComponent& base_component =
-      jpg.components[scan_info.components[0].comp_idx];
-  // h_group / v_group act as numerators for converting number of blocks to
-  // number of MCU. In interleaved mode it is 1, so MCU is represented with
-  // max_*_samp_factor blocks. In non-interleaved mode we choose numerator to
-  // be the samping factor, consequently MCU is always represented with single
-  // block.
-  const int h_group = is_interleaved ? 1 : base_component.h_samp_factor;
-  const int v_group = is_interleaved ? 1 : base_component.v_samp_factor;
-  int max_h_samp_factor = 1;
-  int max_v_samp_factor = 1;
-  for (const auto& c : jpg.components) {
-    max_h_samp_factor = std::max(c.h_samp_factor, max_h_samp_factor);
-    max_v_samp_factor = std::max(c.v_samp_factor, max_v_samp_factor);
-  }
-  const int MCUs_per_row = DivCeil(jpg.width * h_group, 8 * max_h_samp_factor);
-  const int MCU_rows = DivCeil(jpg.height * v_group, 8 * max_v_samp_factor);
+  int MCUs_per_row = 0;
+  int MCU_rows = 0;
+  jpg.CalculateMcuSize(scan_info, &MCUs_per_row, &MCU_rows);
   const bool is_progressive = state->is_progressive;
   const int Al = is_progressive ? scan_info.Al : 0;
   const int Ss = is_progressive ? scan_info.Ss : 0;

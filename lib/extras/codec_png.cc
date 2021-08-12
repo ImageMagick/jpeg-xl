@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #include "lib/extras/codec_png.h"
 
@@ -30,6 +21,7 @@
 
 #include "lib/jxl/base/byte_order.h"
 #include "lib/jxl/base/compiler_specific.h"
+#include "lib/jxl/base/file_io.h"
 #include "lib/jxl/color_management.h"
 #include "lib/jxl/common.h"
 #include "lib/jxl/dec_external_image.h"
@@ -300,6 +292,12 @@ class ColorEncodingReaderPNG {
     return c_original->SetSRGB(color_space);
   }
 
+  // Whether the image has any color profile information (ICC chunk, sRGB
+  // chunk, cHRM chunk, and so on), or has no color information chunks at all.
+  bool HaveColorProfile() const {
+    return have_pq_ || have_srgb_ || have_gama_ || have_chrm_ || have_icc_;
+  }
+
  private:
   Status DecodeICC(const unsigned char* const payload,
                    const size_t payload_size) {
@@ -338,6 +336,7 @@ class ColorEncodingReaderPNG {
       memcpy(icc_.data(), icc_buf, icc_size);
     }
     free(icc_buf);
+    have_icc_ = true;
     return true;
   }
 
@@ -349,6 +348,7 @@ class ColorEncodingReaderPNG {
   Status DecodeSRGB(const unsigned char* payload, const size_t payload_size) {
     if (payload_size != 1) return JXL_FAILURE("Wrong sRGB size");
     // (PNG uses the same values as ICC.)
+    if (payload[0] >= 4) return JXL_FAILURE("Invalid Rendering Intent");
     rendering_intent_ = static_cast<RenderingIntent>(payload[0]);
     have_srgb_ = true;
     return true;
@@ -450,6 +450,7 @@ class ColorEncodingReaderPNG {
   bool have_srgb_ = false;
   bool have_gama_ = false;
   bool have_chrm_ = false;
+  bool have_icc_ = false;
 
   // Only valid if have_srgb_:
   RenderingIntent rendering_intent_;
@@ -462,6 +463,45 @@ class ColorEncodingReaderPNG {
   PrimariesCIExy primaries_;
 };
 
+Status ApplyHints(const bool is_gray, CodecInOut* io) {
+  bool got_color_space = false;
+
+  JXL_RETURN_IF_ERROR(io->dec_hints.Foreach(
+      [is_gray, io, &got_color_space](const std::string& key,
+                                      const std::string& value) -> Status {
+        ColorEncoding* c_original = &io->metadata.m.color_encoding;
+        if (key == "color_space") {
+          if (!ParseDescription(value, c_original) ||
+              !c_original->CreateICC()) {
+            return JXL_FAILURE("PNG: Failed to apply color_space");
+          }
+
+          if (is_gray != io->metadata.m.color_encoding.IsGray()) {
+            return JXL_FAILURE(
+                "PNG: mismatch between file and color_space hint");
+          }
+
+          got_color_space = true;
+        } else if (key == "icc_pathname") {
+          PaddedBytes icc;
+          JXL_RETURN_IF_ERROR(ReadFile(value, &icc));
+          JXL_RETURN_IF_ERROR(c_original->SetICC(std::move(icc)));
+          got_color_space = true;
+        } else {
+          JXL_WARNING("PNG decoder ignoring %s hint", key.c_str());
+        }
+        return true;
+      }));
+
+  if (!got_color_space) {
+    JXL_WARNING("PNG: no color_space/icc_pathname given, assuming sRGB");
+    JXL_RETURN_IF_ERROR(io->metadata.m.color_encoding.SetSRGB(
+        is_gray ? ColorSpace::kGray : ColorSpace::kRGB));
+  }
+
+  return true;
+}
+
 // Stores ColorEncoding into PNG chunks.
 class ColorEncodingWriterPNG {
  public:
@@ -470,7 +510,9 @@ class ColorEncodingWriterPNG {
     if (c.IsSRGB()) {
       JXL_RETURN_IF_ERROR(AddSRGB(c, info));
       // PNG recommends not including both sRGB and iCCP, so skip the latter.
-    } else {
+    } else if (!c.HaveFields() || !c.tf.IsGamma()) {
+      // Having a gamma value means that the source was a PNG with gAMA and
+      // without iCCP.
       JXL_ASSERT(!c.ICC().empty());
       JXL_RETURN_IF_ERROR(AddICC(c.ICC(), info));
     }
@@ -524,13 +566,21 @@ class ColorEncodingWriterPNG {
 
   // Returns PNG encoding of floating-point value (times 10^5).
   static uint32_t U32FromF64(const double x) {
-    return static_cast<int32_t>(std::round(x * 1E5));
+    return static_cast<int32_t>(roundf(x * 1E5));
   }
 
   static Status MaybeAddGAMA(const ColorEncoding& c,
                              LodePNGInfo* JXL_RESTRICT info) {
-    if (!c.tf.IsGamma()) return true;
-    const double gamma = c.tf.GetGamma();
+    double gamma;
+    if (c.tf.IsGamma()) {
+      gamma = c.tf.GetGamma();
+    } else if (c.tf.IsLinear()) {
+      gamma = 1;
+    } else if (c.tf.IsSRGB()) {
+      gamma = 0.45455;
+    } else {
+      return true;
+    }
 
     PaddedBytes payload(4);
     StoreBE32(U32FromF64(gamma), payload.data());
@@ -539,20 +589,30 @@ class ColorEncodingWriterPNG {
 
   static Status MaybeAddCHRM(const ColorEncoding& c,
                              LodePNGInfo* JXL_RESTRICT info) {
-    // TODO(lode): remove this, PNG can also have cHRM for P3, sRGB, ...
-    if (c.white_point != WhitePoint::kCustom &&
-        c.primaries != Primaries::kCustom) {
-      return true;
-    }
-
-    const CIExy white_point = c.GetWhitePoint();
+    CIExy white_point = c.GetWhitePoint();
     // A PNG image stores both whitepoint and primaries in the cHRM chunk, but
     // for grayscale images we don't have primaries. It does not matter what
     // values are stored in the PNG though (all colors are a multiple of the
     // whitepoint), so choose default ones. See
     // http://www.libpng.org/pub/png/spec/1.2/PNG-Chunks.html section 4.2.2.1.
-    const PrimariesCIExy primaries =
+    PrimariesCIExy primaries =
         c.IsGray() ? ColorEncoding().GetPrimaries() : c.GetPrimaries();
+
+    if (c.primaries == Primaries::kSRGB && c.white_point == WhitePoint::kD65) {
+      // For sRGB, the cHRM chunk is supposed to have very specific values which
+      // don't quite match the pre-quantized ones we have (red is off by
+      // 0.00010). Technically, this is only required for full sRGB, but for
+      // consistency, we might as well use them whenever the primaries and white
+      // point are sRGB's.
+      white_point.x = 0.31270;
+      white_point.y = 0.32900;
+      primaries.r.x = 0.64000;
+      primaries.r.y = 0.33000;
+      primaries.g.x = 0.30000;
+      primaries.g.y = 0.60000;
+      primaries.b.x = 0.15000;
+      primaries.b.y = 0.06000;
+    }
 
     PaddedBytes payload(32);
     StoreBE32(U32FromF64(white_point.x), &payload[0]);
@@ -590,7 +650,7 @@ Status CheckGray(const LodePNGColorMode& mode, bool has_icc, bool* is_gray) {
     case LCT_PALETTE: {
       if (has_icc) {
         // If an ICC profile is present, the PNG specification requires
-        // palette to be intepreted as RGB colored, not grayscale, so we must
+        // palette to be interpreted as RGB colored, not grayscale, so we must
         // output color in that case and unfortunately can't optimize it to
         // gray if the palette only has gray entries.
         *is_gray = false;
@@ -708,12 +768,6 @@ Status DecodeImagePNG(const Span<const uint8_t> bytes, ThreadPool* pool,
   io->metadata.m.SetAlphaBits(
       has_alpha ? io->metadata.m.bit_depth.bits_per_sample : 0);
 
-  (void)io->dec_hints.Foreach(
-      [](const std::string& key, const std::string& /*value*/) {
-        JXL_WARNING("PNG decoder ignoring %s hint", key.c_str());
-        return true;
-      });
-
   // Always decode to 8/16-bit RGB/RGBA, not LCT_PALETTE.
   state.s.info_raw.bitdepth = static_cast<unsigned>(bits_per_sample);
   state.s.info_raw.colortype = MakeType(is_gray, has_alpha);
@@ -748,13 +802,29 @@ Status DecodeImagePNG(const Span<const uint8_t> bytes, ThreadPool* pool,
   JXL_RETURN_IF_ERROR(ok);
   io->dec_pixels = w * h;
   io->metadata.m.bit_depth.bits_per_sample = io->Main().DetectRealBitdepth();
+  io->metadata.m.xyb_encoded = false;
   SetIntensityTarget(io);
+  if (!reader.HaveColorProfile()) {
+    JXL_RETURN_IF_ERROR(ApplyHints(is_gray, io));
+  } else {
+    (void)io->dec_hints.Foreach(
+        [](const std::string& key, const std::string& /*value*/) {
+          JXL_WARNING("PNG decoder ignoring %s hint", key.c_str());
+          return true;
+        });
+  }
   return true;
 }
 
 Status EncodeImagePNG(const CodecInOut* io, const ColorEncoding& c_desired,
                       size_t bits_per_sample, ThreadPool* pool,
                       PaddedBytes* bytes) {
+  if (bits_per_sample > 8) {
+    bits_per_sample = 16;
+  } else if (bits_per_sample < 8) {
+    // PNG can also do 4, 2, and 1 bits per sample, but it isn't implemented
+    bits_per_sample = 8;
+  }
   ImageBundle ib = io->Main().Copy();
   const size_t alpha_bits = ib.HasAlpha() ? bits_per_sample : 0;
   ImageMetadata metadata = io->metadata.m;
@@ -768,9 +838,9 @@ Status EncodeImagePNG(const CodecInOut* io, const ColorEncoding& c_desired,
   PaddedBytes raw_bytes(stride * ib.oriented_ysize());
   JXL_RETURN_IF_ERROR(ConvertToExternal(
       *transformed, bits_per_sample, /*float_out=*/false,
-      /*apply_srgb_tf=*/false, c_desired.Channels() + (ib.HasAlpha() ? 1 : 0),
-      JXL_BIG_ENDIAN, stride, pool, raw_bytes.data(), raw_bytes.size(),
-      metadata.GetOrientation()));
+      c_desired.Channels() + (ib.HasAlpha() ? 1 : 0), JXL_BIG_ENDIAN, stride,
+      pool, raw_bytes.data(), raw_bytes.size(), /*out_callback=*/nullptr,
+      /*out_opaque=*/nullptr, metadata.GetOrientation()));
 
   PNGState state;
   // For maximum compatibility, still store 8-bit even if pixels are all zero.

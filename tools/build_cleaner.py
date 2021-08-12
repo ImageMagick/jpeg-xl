@@ -1,17 +1,8 @@
 #!/usr/bin/env python3
-# Copyright (c) the JPEG XL Project
+# Copyright (c) the JPEG XL Project Authors. All rights reserved.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Use of this source code is governed by a BSD-style
+# license that can be found in the LICENSE file.
 
 
 """build_cleaner.py: Update build files.
@@ -49,16 +40,23 @@ def GetPrefixLibFiles(repo_files, prefix, suffixes=('.h', '.cc', '.ui')):
 #   * decoder and common sources,
 #   * encoder-only sources,
 #   * tests-only sources,
-#   * google benchmark sources and
-#   * threads library sources.
+#   * google benchmark sources,
+#   * threads library sources,
+#   * libjxl (encoder+decoder) public include/ headers and
+#   * threads public include/ headers.
 JxlSources = collections.namedtuple(
-    'JxlSources', ['dec', 'enc', 'test', 'gbench', 'threads'])
+    'JxlSources', ['dec', 'enc', 'test', 'gbench', 'threads',
+                   'jxl_public_hdrs', 'threads_public_hdrs'])
 
 def SplitLibFiles(repo_files):
   """Splits the library files into the different groups.
 
   """
-  testonly = ('testdata.h', 'test_utils.h', '_test.h', '_test.cc')
+  testonly = (
+      'testdata.h', 'test_utils.h', '_test.h', '_test.cc',
+      # _testonly.* files are library code used in tests only.
+      '_testonly.h', '_testonly.cc'
+  )
   main_srcs = GetPrefixLibFiles(repo_files, 'lib/jxl/')
   extras_srcs = GetPrefixLibFiles(repo_files, 'lib/extras/')
   test_srcs = [fn for fn in main_srcs
@@ -77,6 +75,19 @@ def SplitLibFiles(repo_files):
   enc_srcs.extend([
       "lib/jxl/encode.cc",
       "lib/jxl/encode_internal.h",
+      "lib/jxl/gaborish.cc",
+      "lib/jxl/gaborish.h",
+      "lib/jxl/huffman_tree.cc",
+      "lib/jxl/huffman_tree.h",
+      # Only the inlines in linalg.h header are used in the decoder.
+      # TODO(deymo): split out encoder only linalg.h functions.
+      "lib/jxl/linalg.cc",
+      "lib/jxl/optimize.cc",
+      "lib/jxl/optimize.h",
+      "lib/jxl/progressive_split.cc",
+      "lib/jxl/progressive_split.h",
+      # TODO(deymo): Add luminance.cc and luminance.h here too. Currently used
+      # by aux_out.h.
       # dec_file is not intended to be part of the decoder library, so move it
       # to the encoder source set
       "lib/jxl/dec_file.cc",
@@ -101,7 +112,12 @@ def SplitLibFiles(repo_files):
   thread_srcs = GetPrefixLibFiles(repo_files, 'lib/threads/')
   thread_srcs = [fn for fn in thread_srcs
                  if not any(patt in fn for patt in testonly)]
-  return JxlSources(dec_srcs, enc_srcs, test_srcs, gbench_srcs, thread_srcs)
+  public_hdrs = GetPrefixLibFiles(repo_files, 'lib/include/jxl/')
+
+  threads_public_hdrs = [fn for fn in public_hdrs if '_parallel_runner' in fn]
+  jxl_public_hdrs = list(sorted(set(public_hdrs) - set(threads_public_hdrs)))
+  return JxlSources(dec_srcs, enc_srcs, test_srcs, gbench_srcs, thread_srcs,
+                    jxl_public_hdrs, threads_public_hdrs)
 
 
 def CleanFile(args, filename, pattern_data_list):
@@ -201,10 +217,17 @@ def BuildCleaner(args):
   gni_patterns.append((
       r'libjxl_gbench_sources = \[\n([^\]]+)\]',
       ''.join('    "%s",\n' % fn[len('lib/'):] for fn in jxl_src.gbench)))
+
+
+  tests = [fn[len('lib/'):] for fn in jxl_src.test if fn.endswith('_test.cc')]
+  testlib = [fn[len('lib/'):] for fn in jxl_src.test
+             if not fn.endswith('_test.cc')]
   gni_patterns.append((
       r'libjxl_tests_sources = \[\n([^\]]+)\]',
-      ''.join('    "%s",\n' % fn[len('lib/'):] for fn in jxl_src.test
-              if fn.endswith('_test.cc'))))
+      ''.join('    "%s",\n' % fn for fn in tests)))
+  gni_patterns.append((
+      r'libjxl_testlib_sources = \[\n([^\]]+)\]',
+      ''.join('    "%s",\n' % fn for fn in testlib)))
 
   # libjxl_threads
   ok = CleanFile(
@@ -228,13 +251,29 @@ def BuildCleaner(args):
       r'libjxl_profiler_sources = \[\n([^\]]+)\]',
       ''.join('    "%s",\n' % fn for fn in profiler_srcs)))
 
-  # Update the list of tests.
+  # Public headers.
+  gni_patterns.append((
+      r'libjxl_public_headers = \[\n([^\]]+)\]',
+      ''.join('    "%s",\n' % fn[len('lib/'):]
+              for fn in jxl_src.jxl_public_hdrs)))
+  gni_patterns.append((
+      r'libjxl_threads_public_headers = \[\n([^\]]+)\]',
+      ''.join('    "%s",\n' % fn[len('lib/'):]
+              for fn in jxl_src.threads_public_hdrs)))
+
+
+  # Update the list of tests. CMake version include test files in other libs,
+  # not just in libjxl.
   tests = [fn[len('lib/'):] for fn in repo_files
            if fn.endswith('_test.cc') and fn.startswith('lib/')]
   ok = CleanFile(
       args, 'lib/jxl_tests.cmake',
       [(r'set\(TEST_FILES\n([^\)]+)  ### Files before this line',
         ''.join('  %s\n' % fn for fn in tests))]) and ok
+  ok = CleanFile(
+      args, 'lib/jxl_tests.cmake',
+      [(r'set\(TESTLIB_FILES\n([^\)]+)\)',
+        ''.join('  %s\n' % fn for fn in testlib))]) and ok
 
   # Update lib.gni
   ok = CleanFile(args, 'lib/lib.gni', gni_patterns) and ok

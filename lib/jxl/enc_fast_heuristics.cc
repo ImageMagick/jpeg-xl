@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #include <stddef.h>
 #include <stdint.h>
@@ -26,6 +17,7 @@
 #include "lib/jxl/enc_cache.h"
 #include "lib/jxl/enc_heuristics.h"
 #include "lib/jxl/enc_noise.h"
+#include "lib/jxl/gaborish.h"
 #include "lib/jxl/gauss_blur.h"
 
 #undef HWY_TARGET_INCLUDE
@@ -106,7 +98,7 @@ Status Heuristics(PassesEncoderState* enc_state,
               -GetLane(SumOfLanes(cb)) / (GetLane(SumOfLanes(ca)) + 1e-9f);
           int8_t& res = (c == 0 ? shared.cmap.ytox_map : shared.cmap.ytob_map)
                             .Row(ty)[tx];
-          res = std::max(-128.0f, std::min(127.0f, std::roundf(best)));
+          res = std::max(-128.0f, std::min(127.0f, roundf(best)));
         }
       },
       "CfL");

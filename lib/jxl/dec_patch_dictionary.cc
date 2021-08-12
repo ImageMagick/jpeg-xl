@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #include "lib/jxl/dec_patch_dictionary.h"
 
@@ -29,6 +20,7 @@
 #include "lib/jxl/base/compiler_specific.h"
 #include "lib/jxl/base/override.h"
 #include "lib/jxl/base/status.h"
+#include "lib/jxl/blending.h"
 #include "lib/jxl/chroma_from_luma.h"
 #include "lib/jxl/color_management.h"
 #include "lib/jxl/common.h"
@@ -45,7 +37,9 @@ namespace jxl {
 
 constexpr int kMaxPatches = 1 << 24;
 
-Status PatchDictionary::Decode(BitReader* br, size_t xsize, size_t ysize) {
+Status PatchDictionary::Decode(BitReader* br, size_t xsize, size_t ysize,
+                               bool* uses_extra_channels) {
+  positions_.clear();
   std::vector<uint8_t> context_map;
   ANSCode code;
   JXL_RETURN_IF_ERROR(
@@ -69,6 +63,10 @@ Status PatchDictionary::Decode(BitReader* br, size_t xsize, size_t ysize) {
     if (ref_pos.ref >= kMaxNumReferenceFrames ||
         shared_->reference_frames[ref_pos.ref].frame->xsize() == 0) {
       return JXL_FAILURE("Invalid reference frame ID");
+    }
+    if (!shared_->reference_frames[ref_pos.ref].ib_is_in_xyb) {
+      return JXL_FAILURE(
+          "Patches cannot use frames saved post color transforms");
     }
     const ImageBundle& ib = *shared_->reference_frames[ref_pos.ref].frame;
     ref_pos.x0 = read_num(kPatchReferencePositionContext);
@@ -114,14 +112,11 @@ Status PatchDictionary::Decode(BitReader* br, size_t xsize, size_t ysize) {
         }
         PatchBlending info;
         info.mode = static_cast<PatchBlendMode>(blend_mode);
-        if (i != 0 && info.mode != PatchBlendMode::kNone) {
-          return JXL_FAILURE(
-              "Blending of extra channels with patches is not supported yet");
+        if (UsesAlpha(info.mode)) {
+          *uses_extra_channels = true;
         }
-        if (info.mode != PatchBlendMode::kAdd &&
-            info.mode != PatchBlendMode::kNone &&
-            info.mode != PatchBlendMode::kReplace) {
-          return JXL_FAILURE("Blending mode not supported yet: %u", blend_mode);
+        if (info.mode != PatchBlendMode::kNone && i > 0) {
+          *uses_extra_channels = true;
         }
         if (UsesAlpha(info.mode) &&
             shared_->metadata->m.extra_channel_info.size() > 1) {
@@ -133,9 +128,13 @@ Status PatchDictionary::Decode(BitReader* br, size_t xsize, size_t ysize) {
                 info.alpha_channel,
                 (uint32_t)shared_->metadata->m.extra_channel_info.size());
           }
+        } else {
+          info.alpha_channel = 0;
         }
         if (UsesClamp(info.mode)) {
           info.clamp = read_num(kPatchClampContext);
+        } else {
+          info.clamp = false;
         }
         pos.blending.push_back(info);
       }
@@ -154,7 +153,17 @@ Status PatchDictionary::Decode(BitReader* br, size_t xsize, size_t ysize) {
   return true;
 }
 
+int PatchDictionary::GetReferences() const {
+  int result = 0;
+  for (size_t i = 0; i < positions_.size(); ++i) {
+    result |= (1 << static_cast<int>(positions_[i].ref_pos.ref));
+  }
+  return result;
+}
+
 void PatchDictionary::ComputePatchCache() {
+  patch_starts_.clear();
+  sorted_patches_.clear();
   if (positions_.empty()) return;
   std::vector<std::pair<size_t, size_t>> sorted_patches_y;
   for (size_t i = 0; i < positions_.size(); i++) {
@@ -179,9 +188,51 @@ void PatchDictionary::ComputePatchCache() {
   }
 }
 
-void PatchDictionary::AddTo(Image3F* opsin, const Rect& opsin_rect,
-                            const Rect& image_rect) const {
-  Apply</*add=*/true>(opsin, opsin_rect, image_rect);
+Status PatchDictionary::AddTo(Image3F* opsin, const Rect& opsin_rect,
+                              float* const* extra_channels,
+                              const Rect& image_rect) const {
+  JXL_CHECK(SameSize(opsin_rect, image_rect));
+  size_t num_ec = shared_->metadata->m.num_extra_channels;
+  std::vector<const float*> fg_ptrs(3 + num_ec);
+  std::vector<float*> bg_ptrs(3 + num_ec);
+  for (size_t y = image_rect.y0(); y < image_rect.y0() + image_rect.ysize();
+       y++) {
+    if (y + 1 >= patch_starts_.size()) continue;
+    for (size_t id = patch_starts_[y]; id < patch_starts_[y + 1]; id++) {
+      const PatchPosition& pos = positions_[sorted_patches_[id]];
+      size_t by = pos.y;
+      size_t bx = pos.x;
+      size_t xsize = pos.ref_pos.xsize;
+      JXL_DASSERT(y >= by);
+      JXL_DASSERT(y < by + pos.ref_pos.ysize);
+      size_t iy = y - by;
+      size_t ref = pos.ref_pos.ref;
+      if (bx >= image_rect.x0() + image_rect.xsize()) continue;
+      if (bx + xsize < image_rect.x0()) continue;
+      size_t x0 = std::max(bx, image_rect.x0());
+      size_t x1 = std::min(bx + xsize, image_rect.x0() + image_rect.xsize());
+      for (size_t c = 0; c < 3; c++) {
+        fg_ptrs[c] =
+            shared_->reference_frames[ref].frame->color()->ConstPlaneRow(
+                c, pos.ref_pos.y0 + iy) +
+            pos.ref_pos.x0 + x0 - bx;
+        bg_ptrs[c] = opsin_rect.PlaneRow(opsin, c, y - image_rect.y0()) + x0 -
+                     image_rect.x0();
+      }
+      for (size_t i = 0; i < num_ec; i++) {
+        fg_ptrs[3 + i] =
+            shared_->reference_frames[ref].frame->extra_channels()[i].ConstRow(
+                pos.ref_pos.y0 + iy) +
+            pos.ref_pos.x0 + x0 - bx;
+        bg_ptrs[3 + i] = extra_channels[i] + x0 - image_rect.x0();
+      }
+      JXL_RETURN_IF_ERROR(
+          PerformBlending(bg_ptrs.data(), fg_ptrs.data(), bg_ptrs.data(),
+                          x1 - x0, pos.blending[0], pos.blending.data() + 1,
+                          shared_->metadata->m.extra_channel_info));
+    }
+  }
+  return true;
 }
 
 }  // namespace jxl

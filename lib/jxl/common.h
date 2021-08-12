@@ -1,32 +1,31 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #ifndef LIB_JXL_COMMON_H_
 #define LIB_JXL_COMMON_H_
 
 // Shared constants and helper functions.
 
+#include <inttypes.h>
 #include <stddef.h>
+#include <stdio.h>
 
 #include <limits>  // numeric_limits
 #include <memory>  // unique_ptr
+#include <string>
 
 #include "lib/jxl/base/compiler_specific.h"
 
 #ifndef JXL_HIGH_PRECISION
 #define JXL_HIGH_PRECISION 1
 #endif
+
+// Macro that defines whether support for decoding JXL files to JPEG is enabled.
+#ifndef JPEGXL_ENABLE_TRANSCODE_JPEG
+#define JPEGXL_ENABLE_TRANSCODE_JPEG 1
+#endif  // JPEGXL_ENABLE_TRANSCODE_JPEG
 
 namespace jxl {
 // Some enums and typedefs used by more than one header file.
@@ -75,16 +74,6 @@ constexpr size_t kBlockDim = 8;
 
 constexpr size_t kDCTBlockSize = kBlockDim * kBlockDim;
 
-// Group is the rectangular grid of blocks that can be decoded in parallel. This
-// is different for DC.
-// TODO(jon) : signal kDcGroupDimInBlocks and kGroupDim (and make them
-// variables),
-//             allowing powers of two between (say) 64 and 1024
-constexpr size_t kDcGroupDimInBlocks = 256;
-constexpr size_t kDcGroupDim = kDcGroupDimInBlocks * kBlockDim;
-// 512x512 DC = 4096x4096, enough for a 4K frame (3840x2160)
-// (setting it to 256 results in four DC groups of size 256x256, 224x256,
-// 256x14, 224x14)
 constexpr size_t kGroupDim = 256;
 static_assert(kGroupDim % kBlockDim == 0,
               "Group dim should be divisible by block dim");
@@ -94,7 +83,7 @@ constexpr size_t kGroupDimInBlocks = kGroupDim / kBlockDim;
 constexpr size_t kMaxNumPasses = 11;
 
 // Maximum number of reference frames.
-constexpr size_t kMaxNumReferenceFrames = 3;
+constexpr size_t kMaxNumReferenceFrames = 4;
 
 // Dimensions of a frame, in pixels, and other derived dimensions.
 // Computed from FrameHeader.
@@ -104,9 +93,7 @@ struct FrameDimensions {
            size_t max_hshift, size_t max_vshift, bool modular_mode,
            size_t upsampling) {
     group_dim = (kGroupDim >> 1) << group_size_shift;
-    static_assert(
-        kGroupDim == kDcGroupDimInBlocks,
-        "DC groups (in blocks) and groups (in pixels) have different size");
+    dc_group_dim = group_dim * kBlockDim;
     xsize_upsampled = xsize;
     ysize_upsampled = ysize;
     this->xsize = DivCeil(xsize, upsampling);
@@ -117,8 +104,8 @@ struct FrameDimensions {
     ysize_padded = ysize_blocks * kBlockDim;
     if (modular_mode) {
       // Modular mode doesn't have any padding.
-      xsize_padded = xsize;
-      ysize_padded = ysize;
+      xsize_padded = this->xsize;
+      ysize_padded = this->ysize;
     }
     xsize_upsampled_padded = xsize_padded * upsampling;
     ysize_upsampled_padded = ysize_padded * upsampling;
@@ -156,6 +143,7 @@ struct FrameDimensions {
   size_t num_dc_groups;
   // Size of a group.
   size_t group_dim;
+  size_t dc_group_dim;
 };
 
 // Prior to C++14 (i.e. C++11): provide our own make_unique
@@ -173,24 +161,9 @@ JXL_INLINE T Clamp1(T val, T low, T hi) {
   return val < low ? low : val > hi ? hi : val;
 }
 
-template <typename T>
-JXL_INLINE T ClampToRange(int64_t val) {
-  return Clamp1<int64_t>(val, std::numeric_limits<T>::min(),
-                         std::numeric_limits<T>::max());
-}
-
-template <typename T>
-JXL_INLINE T SaturatingMul(int64_t a, int64_t b) {
-  return ClampToRange<T>(a * b);
-}
-
-template <typename T>
-JXL_INLINE T SaturatingAdd(int64_t a, int64_t b) {
-  return ClampToRange<T>(a + b);
-}
-
 // Encodes non-negative (X) into (2 * X), negative (-X) into (2 * X - 1)
-constexpr uint32_t PackSigned(int32_t value) {
+constexpr uint32_t PackSigned(int32_t value)
+    JXL_NO_SANITIZE("unsigned-integer-overflow") {
   return (static_cast<uint32_t>(value) << 1) ^
          ((static_cast<uint32_t>(~value) >> 31) - 1);
 }
@@ -200,6 +173,22 @@ constexpr intptr_t UnpackSigned(size_t value) {
   return static_cast<intptr_t>((value >> 1) ^ (((~value) & 1) - 1));
 }
 
+// conversion from integer to string.
+template <typename T>
+std::string ToString(T n) {
+  char data[32] = {};
+  if (T(0.1) != T(0)) {
+    // float
+    snprintf(data, sizeof(data), "%g", static_cast<double>(n));
+  } else if (T(-1) > T(0)) {
+    // unsigned
+    snprintf(data, sizeof(data), "%llu", static_cast<unsigned long long>(n));
+  } else {
+    // signed
+    snprintf(data, sizeof(data), "%lld", static_cast<long long>(n));
+  }
+  return data;
+}
 }  // namespace jxl
 
 #endif  // LIB_JXL_COMMON_H_

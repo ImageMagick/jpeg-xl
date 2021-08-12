@@ -1,16 +1,7 @@
-// Copyright (c) the JPEG XL Project
+// Copyright (c) the JPEG XL Project Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 #include "lib/jxl/alpha.h"
 
@@ -29,18 +20,27 @@ TEST(AlphaTest, BlendingWithNonPremultiplied) {
   const float bg_a = 180.f / 255;
   const float fg_rgb[3] = {25, 21, 23};
   const float fg_a = 15420.f / 65535;
+  const float fg_a2 = 2.0f;
   float out_rgb[3];
   float out_a;
   PerformAlphaBlending(
       /*bg=*/{&bg_rgb[0], &bg_rgb[1], &bg_rgb[2], &bg_a},
       /*fg=*/{&fg_rgb[0], &fg_rgb[1], &fg_rgb[2], &fg_a},
-      /*out=*/
-      {&out_rgb[0], &out_rgb[1], &out_rgb[2], &out_a}, 1,
-      /*alpha_is_premultiplied=*/false);
+      /*out=*/{&out_rgb[0], &out_rgb[1], &out_rgb[2], &out_a}, 1,
+      /*alpha_is_premultiplied=*/false, /*clamp=*/false);
   EXPECT_THAT(out_rgb,
               ElementsAre(FloatNear(77.2f, .05f), FloatNear(83.0f, .05f),
                           FloatNear(90.6f, .05f)));
   EXPECT_NEAR(out_a, 3174.f / 4095, 1e-5);
+  PerformAlphaBlending(
+      /*bg=*/{&bg_rgb[0], &bg_rgb[1], &bg_rgb[2], &bg_a},
+      /*fg=*/{&fg_rgb[0], &fg_rgb[1], &fg_rgb[2], &fg_a2},
+      /*out=*/{&out_rgb[0], &out_rgb[1], &out_rgb[2], &out_a}, 1,
+      /*alpha_is_premultiplied=*/false, /*clamp=*/true);
+  EXPECT_THAT(out_rgb, ElementsAre(FloatNear(fg_rgb[0], .05f),
+                                   FloatNear(fg_rgb[1], .05f),
+                                   FloatNear(fg_rgb[2], .05f)));
+  EXPECT_NEAR(out_a, 1.0f, 1e-5);
 }
 
 TEST(AlphaTest, BlendingWithPremultiplied) {
@@ -48,18 +48,37 @@ TEST(AlphaTest, BlendingWithPremultiplied) {
   const float bg_a = 180.f / 255;
   const float fg_rgb[3] = {25, 21, 23};
   const float fg_a = 15420.f / 65535;
+  const float fg_a2 = 2.0f;
   float out_rgb[3];
   float out_a;
   PerformAlphaBlending(
       /*bg=*/{&bg_rgb[0], &bg_rgb[1], &bg_rgb[2], &bg_a},
       /*fg=*/{&fg_rgb[0], &fg_rgb[1], &fg_rgb[2], &fg_a},
-      /*out=*/
-      {&out_rgb[0], &out_rgb[1], &out_rgb[2], &out_a}, 1,
-      /*alpha_is_premultiplied=*/true);
+      /*out=*/{&out_rgb[0], &out_rgb[1], &out_rgb[2], &out_a}, 1,
+      /*alpha_is_premultiplied=*/true, /*clamp=*/false);
   EXPECT_THAT(out_rgb,
               ElementsAre(FloatNear(101.5f, .05f), FloatNear(105.1f, .05f),
                           FloatNear(114.8f, .05f)));
   EXPECT_NEAR(out_a, 3174.f / 4095, 1e-5);
+  PerformAlphaBlending(
+      /*bg=*/{&bg_rgb[0], &bg_rgb[1], &bg_rgb[2], &bg_a},
+      /*fg=*/{&fg_rgb[0], &fg_rgb[1], &fg_rgb[2], &fg_a2},
+      /*out=*/{&out_rgb[0], &out_rgb[1], &out_rgb[2], &out_a}, 1,
+      /*alpha_is_premultiplied=*/true, /*clamp=*/true);
+  EXPECT_THAT(out_rgb, ElementsAre(FloatNear(fg_rgb[0], .05f),
+                                   FloatNear(fg_rgb[1], .05f),
+                                   FloatNear(fg_rgb[2], .05f)));
+  EXPECT_NEAR(out_a, 1.0f, 1e-5);
+}
+
+TEST(AlphaTest, Mul) {
+  const float bg = 100;
+  const float fg = 25;
+  float out;
+  PerformMulBlending(&bg, &fg, &out, 1, /*clamp=*/false);
+  EXPECT_THAT(out, FloatNear(fg * bg, .05f));
+  PerformMulBlending(&bg, &fg, &out, 1, /*clamp=*/true);
+  EXPECT_THAT(out, FloatNear(bg, .05f));
 }
 
 TEST(AlphaTest, PremultiplyAndUnpremultiply) {
