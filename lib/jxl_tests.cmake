@@ -4,7 +4,9 @@
 # license that can be found in the LICENSE file.
 
 set(TEST_FILES
+  extras/codec_pgx_test.cc
   extras/codec_test.cc
+  extras/color_description_test.cc
   jxl/ac_strategy_test.cc
   jxl/adaptive_reconstruction_test.cc
   jxl/alpha_test.cc

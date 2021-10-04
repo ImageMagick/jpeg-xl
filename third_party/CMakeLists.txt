@@ -114,13 +114,13 @@ else()
 endif()
 
 # lodepng
-#if( NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lodepng/lodepng.h" )
-#  message(FATAL_ERROR "Please run ${PROJECT_SOURCE_DIR}/deps.sh to fetch the "
-#          "build dependencies.")
-#endif()
-#include(lodepng.cmake)
-#configure_file("${CMAKE_CURRENT_SOURCE_DIR}/lodepng/LICENSE"
-#               ${PROJECT_BINARY_DIR}/LICENSE.lodepng COPYONLY)
+if( NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lodepng/lodepng.h" )
+  message(FATAL_ERROR "Please run ${PROJECT_SOURCE_DIR}/deps.sh to fetch the "
+          "build dependencies.")
+endif()
+include(lodepng.cmake)
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/lodepng/LICENSE"
+               ${PROJECT_BINARY_DIR}/LICENSE.lodepng COPYONLY)
 
 # brotli
 if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/brotli/c/include/brotli/decode.h" OR
@@ -192,7 +192,7 @@ else()
 endif()
 
 # *cms
-if (JPEGXL_ENABLE_SKCMS)
+if (JPEGXL_ENABLE_SKCMS OR JPEGXL_ENABLE_PLUGINS)
   if( NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/skcms/skcms.h" )
     message(FATAL_ERROR "Please run ${PROJECT_SOURCE_DIR}/deps.sh to fetch the "
             "build dependencies.")
@@ -201,14 +201,14 @@ if (JPEGXL_ENABLE_SKCMS)
   configure_file("${CMAKE_CURRENT_SOURCE_DIR}/skcms/LICENSE"
                  ${PROJECT_BINARY_DIR}/LICENSE.skcms COPYONLY)
 endif ()
-#if (JPEGXL_ENABLE_VIEWERS OR NOT JPEGXL_ENABLE_SKCMS)
-#  if( NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lcms/.git" )
-#    message(SEND_ERROR "Please run git submodule update --init")
-#  endif()
-#  include(lcms2.cmake)
-#  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/lcms/COPYING"
-#                 ${PROJECT_BINARY_DIR}/LICENSE.lcms COPYONLY)
-#endif()
+if (JPEGXL_ENABLE_VIEWERS OR NOT JPEGXL_ENABLE_SKCMS)
+  if( NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lcms/.git" )
+    message(SEND_ERROR "Please run git submodule update --init")
+  endif()
+  include(lcms2.cmake)
+  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/lcms/COPYING"
+                 ${PROJECT_BINARY_DIR}/LICENSE.lcms COPYONLY)
+endif()
 
 # sjpeg
 if (JPEGXL_ENABLE_SJPEG)

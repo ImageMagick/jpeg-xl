@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6] - 2021-10-04
+### Added
+ - API: New functions to decode extra channels:
+   `JxlDecoderExtraChannelBufferSize` and `JxlDecoderSetExtraChannelBuffer`.
+ - API: New function `JxlEncoderInitBasicInfo` to initialize `JxlBasicInfo`
+   (only needed when encoding). NOTE: it is now required to call this function
+   when using the encoder. Padding was added to the struct for forward
+   compatibility.
+ - API: Support for encoding oriented images.
+ - API: FLOAT16 support in the encoder API.
+ - Rewrite of the GDK pixbuf loader plugin. Added proper color management and
+   animation support.
+ - Rewrite of GIMP plugin. Added compression parameters dialog and switched to
+   using the public C API.
+ - Debian packages for GDK pixbuf loader (`libjxl-gdk-pixbuf`) and GIMP
+   (`libjxl-gimp-plugin`) plugins.
+ - `cjxl`/`djxl` support for `stdin` and `stdout`.
+
+### Changed
+ - API: Renamed the field `alpha_associated` in `JxlExtraChannelInfo` to
+   `alpha_premultiplied`, to match the corresponding name in `JxlBasicInfo`.
+ - Improved the 2x2 downscaling method in the encoder for the optional color
+   channel resampling for low bit rates.
+ - Fixed: the combination of floating point original data, XYB color encoding,
+   and Modular mode was broken (in both encoder and decoder). It now works.
+   NOTE: this can cause the current encoder to write jxl bitstreams that do
+   not decode with the old decoder. In particular this will happen when using
+   cjxl with PFM, EXR, or floating point PSD input, and a combination of XYB
+   and modular mode is used (which caused an encoder error before), e.g.
+   using options like `-m -q 80` (lossy modular), `-d 4.5` or `--progressive_dc=1`
+   (modular DC frame), or default lossy encoding on an image where patches
+   end up being used. There is no problem when using cjxl with PNG, JPEG, GIF,
+   APNG, PPM, PGM, PGX, or integer (8-bit or 16-bit) PSD input.
+ - `libjxl` static library now bundles skcms, fixing static linking in
+   downstream projects when skcms is used.
+ - Spline rendering performance improvements.
+ - Butteraugli changes for less visual masking.
+
 ## [0.5] - 2021-08-02
 ### Added
  - API: New function to decode the image using a callback outputting a part of a
