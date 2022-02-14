@@ -334,7 +334,7 @@ if (JPEGXL_ENABLE_SKCMS)
     list(APPEND JPEGXL_INTERNAL_LIBS skcms)
   endif ()
 else ()
-  #list(APPEND JPEGXL_INTERNAL_LIBS lcms2)
+  list(APPEND JPEGXL_INTERNAL_LIBS lcms2)
 endif ()
 
 if (NOT JPEGXL_ENABLE_TRANSCODE_JPEG)
@@ -393,9 +393,9 @@ if (JPEGXL_ENABLE_SKCMS)
     $<TARGET_PROPERTY:skcms,INCLUDE_DIRECTORIES>
   )
 else ()
-  #target_include_directories(jxl_enc-obj PRIVATE
-  #  $<TARGET_PROPERTY:lcms2,INCLUDE_DIRECTORIES>
-  #)
+  target_include_directories(jxl_enc-obj PRIVATE
+    $<TARGET_PROPERTY:lcms2,INCLUDE_DIRECTORIES>
+  )
 endif ()
 
 # Headers for exporting/importing public headers
@@ -558,9 +558,9 @@ endif()  # TARGET_SUPPORTS_SHARED_LIBS AND NOT JPEGXL_STATIC
 # Add a pkg-config file for libjxl.
 set(JPEGXL_LIBRARY_REQUIRES
     "libhwy libbrotlicommon libbrotlienc libbrotlidec")
-#if(NOT JPEGXL_ENABLE_SKCMS)
-#  set(JPEGXL_LIBRARY_REQUIRES "${JPEGXL_LIBRARY_REQUIRES} lcms2")
-#endif()
+if(NOT JPEGXL_ENABLE_SKCMS)
+  set(JPEGXL_LIBRARY_REQUIRES "${JPEGXL_LIBRARY_REQUIRES} lcms2")
+endif()
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/jxl/libjxl.pc.in"
                "libjxl.pc" @ONLY)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/libjxl.pc"

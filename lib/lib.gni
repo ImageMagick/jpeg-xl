@@ -9,7 +9,7 @@
 libjxl_version_defines = [
     "JPEGXL_MAJOR_VERSION=0",
     "JPEGXL_MINOR_VERSION=6",
-    "JPEGXL_PATCH_VERSION=0",
+    "JPEGXL_PATCH_VERSION=1",
 ]
 
 libjxl_public_headers = [
@@ -385,6 +385,7 @@ libjxl_testlib_sources = [
     "jxl/dct_for_test.h",
     "jxl/dec_transforms_testonly.cc",
     "jxl/dec_transforms_testonly.h",
+    "jxl/fake_parallel_runner_testonly.h",
     "jxl/image_test_utils.h",
     "jxl/test_utils.h",
     "jxl/testdata.h",
