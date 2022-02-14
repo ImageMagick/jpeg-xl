@@ -39,4 +39,10 @@
 #  endif
 #endif
 
+#if _MSC_VER
+#define JPEGXL_MAJOR_VERSION 0
+#define JPEGXL_MINOR_VERSION 6
+#define JPEGXL_PATCH_VERSION 1
+#endif
+
 #endif /* JXL_EXPORT_H */
