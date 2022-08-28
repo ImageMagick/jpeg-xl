@@ -9,10 +9,10 @@
 #  ifndef JXL_THREADS_EXPORT
 #    ifdef JXL_THREADS_INTERNAL_LIBRARY_BUILD
         /* We are building this library */
-#      define JXL_THREADS_EXPORT 
+#      define JXL_THREADS_EXPORT __declspec(dllexport)
 #    else
         /* We are using this library */
-#      define JXL_THREADS_EXPORT 
+#      define JXL_THREADS_EXPORT __declspec(dllimport)
 #    endif
 #  endif
 
