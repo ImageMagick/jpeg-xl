@@ -32,6 +32,14 @@ HWY_BEFORE_NAMESPACE();
 namespace jxl {
 namespace HWY_NAMESPACE {
 
+// These templates are not found via ADL.
+using hwy::HWY_NAMESPACE::Abs;
+using hwy::HWY_NAMESPACE::Ge;
+using hwy::HWY_NAMESPACE::IfThenElse;
+using hwy::HWY_NAMESPACE::IfThenElseZero;
+using hwy::HWY_NAMESPACE::MaskFromVec;
+using hwy::HWY_NAMESPACE::Round;
+
 // NOTE: caller takes care of extracting quant from rect of RawQuantField.
 void QuantizeBlockAC(const Quantizer& quantizer, const bool error_diffusion,
                      size_t c, int32_t quant, float qm_multiplier,
@@ -42,10 +50,20 @@ void QuantizeBlockAC(const Quantizer& quantizer, const bool error_diffusion,
   const float* JXL_RESTRICT qm = quantizer.InvDequantMatrix(quant_kind, c);
   const float qac = quantizer.Scale() * quant;
   // Not SIMD-fied for now.
-  float thres[4] = {0.5f, 0.6f, 0.6f, 0.65f};
-  if (c != 1) {
+  float thres[4] = {0.58f, 0.635f, 0.66f, 0.7f};
+  if (c == 0) {
+    for (int i = 1; i < 4; ++i) {
+      thres[i] += 0.08f;
+    }
+  }
+  if (c == 2) {
     for (int i = 1; i < 4; ++i) {
       thres[i] = 0.75f;
+    }
+  }
+  if (xsize > 1 || ysize > 1) {
+    for (int i = 0; i < 4; ++i) {
+      thres[i] -= Clamp1(0.003f * xsize * ysize, 0.f, (c > 0 ? 0.08f : 0.12f));
     }
   }
 
@@ -73,10 +91,10 @@ void QuantizeBlockAC(const Quantizer& quantizer, const bool error_diffusion,
               thres[yfix + static_cast<size_t>(x >= xsize * kBlockDim / 2)]);
         }
 
-        const auto q = Load(df, qm + off + x) * quant;
+        const auto q = Mul(Load(df, qm + off + x), quant);
         const auto in = Load(df, block_in + off + x);
-        const auto val = q * in;
-        const auto nzero_mask = Abs(val) >= thr;
+        const auto val = Mul(q, in);
+        const auto nzero_mask = Ge(Abs(val), thr);
         const auto v = ConvertTo(di, IfThenElseZero(nzero_mask, Round(val)));
         Store(v, di, block_out + off + x);
       }
@@ -102,7 +120,7 @@ retry:
       const float val = block_in[pos] * (qm[pos] * qac * qm_multiplier);
       float v = (std::abs(val) < thres[hfix]) ? 0 : rintf(val);
       const float error = std::abs(val) - std::abs(v);
-      hfError[hfix] += error;
+      hfError[hfix] += error * error;
       if (hfMaxError[hfix] < error) {
         hfMaxError[hfix] = error;
         hfMaxErrorIx[hfix] = pos;
@@ -114,13 +132,14 @@ retry:
     }
   }
   if (c != 1) return;
-  // TODO(veluca): include AFV?
-  const size_t kPartialBlockKinds =
+  constexpr size_t kPartialBlockKinds =
       (1 << AcStrategy::Type::IDENTITY) | (1 << AcStrategy::Type::DCT2X2) |
       (1 << AcStrategy::Type::DCT4X4) | (1 << AcStrategy::Type::DCT4X8) |
-      (1 << AcStrategy::Type::DCT8X4);
+      (1 << AcStrategy::Type::DCT8X4) | (1 << AcStrategy::Type::AFV0) |
+      (1 << AcStrategy::Type::AFV1) | (1 << AcStrategy::Type::AFV2) |
+      (1 << AcStrategy::Type::AFV3);
   if ((1 << quant_kind) & kPartialBlockKinds) return;
-  float hfErrorLimit = 0.1f * (xsize * ysize) * kDCTBlockSize * 0.25f;
+  float hfErrorLimit = 0.029f * (xsize * ysize) * kDCTBlockSize * 0.25f;
   bool goretry = false;
   for (int i = 1; i < 4; ++i) {
     if (hfError[i] >= hfErrorLimit &&
@@ -163,7 +182,7 @@ void QuantizeRoundtripYBlockAC(const Quantizer& quantizer,
     const auto quant = Load(di, quantized + k);
     const auto adj_quant = AdjustQuantBias(di, 1, quant, biases);
     const auto dequantm = Load(df, dequant_matrix + k);
-    Store(adj_quant * dequantm * inv_qac, df, inout + k);
+    Store(Mul(Mul(adj_quant, dequantm), inv_qac), df, inout + k);
   }
 }
 
@@ -275,8 +294,8 @@ void ComputeCoefficients(size_t group_idx, PassesEncoderState* enc_state,
             const auto in_x = Load(d, coeffs_in + k);
             const auto in_y = Load(d, coeffs_in + size + k);
             const auto in_b = Load(d, coeffs_in + 2 * size + k);
-            const auto out_x = in_x - x_factor * in_y;
-            const auto out_b = in_b - b_factor * in_y;
+            const auto out_x = NegMulAdd(x_factor, in_y, in_x);
+            const auto out_b = NegMulAdd(b_factor, in_y, in_b);
             Store(out_x, d, coeffs_in + k);
             Store(out_b, d, coeffs_in + 2 * size + k);
           }
