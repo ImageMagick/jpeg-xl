@@ -13,6 +13,7 @@
 
 #include "jxl/codestream_header.h"
 #include "jxl/types.h"
+#include "jxl/version.h"
 #include "lib/jxl/aux_out.h"
 #include "lib/jxl/base/byte_order.h"
 #include "lib/jxl/base/span.h"
