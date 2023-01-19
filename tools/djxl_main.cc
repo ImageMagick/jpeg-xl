@@ -53,15 +53,22 @@ struct DecompressArgs {
                             "Used for benchmarking, the default is 1.",
                             &num_reps, &ParseUnsigned);
 
+    cmdline->AddOptionFlag('\0', "disable_output",
+                           "No output file will be written (for benchmarking)",
+                           &disable_output, &SetBooleanTrue, 1);
+
     cmdline->AddOptionValue('\0', "num_threads", "N",
                             "Sets the number of threads to use. The default 0 "
                             "value means the machine default.",
                             &num_threads, &ParseUnsigned);
 
-    cmdline->AddOptionValue('\0', "bits_per_sample", "N",
-                            "Sets the output bit depth. The default 0 value "
-                            "means the original (input) bit depth.",
-                            &bits_per_sample, &ParseUnsigned);
+    opt_bits_per_sample_id = cmdline->AddOptionValue(
+        '\0', "bits_per_sample", "N",
+        "Sets the output bit depth. The 0 value (default for PNM output) "
+        "means the original (input) bit depth. The -1 value (default for "
+        "other codecs) means the full bit depth of the output pixel "
+        "format.",
+        &bits_per_sample, &ParseSigned);
 
     cmdline->AddOptionValue('\0', "display_nits", "N",
                             "If set to a non-zero value, tone maps the image "
@@ -162,8 +169,9 @@ struct DecompressArgs {
   const char* file_out = nullptr;
   bool version = false;
   size_t num_reps = 1;
+  bool disable_output = false;
   size_t num_threads = 0;
-  size_t bits_per_sample = 0;
+  int bits_per_sample = -1;
   double display_nits = 0.0;
   std::string color_space;
   uint32_t downsampling = 0;
@@ -179,6 +187,7 @@ struct DecompressArgs {
   bool print_read_bytes = false;
   bool quiet = false;
   // References (ids) of specific options to check if they were matched.
+  CommandLineParser::OptionId opt_bits_per_sample_id = -1;
   CommandLineParser::OptionId opt_jpeg_quality_id = -1;
 };
 
@@ -227,6 +236,7 @@ bool DecompressJxlReconstructJPEG(const jpegxl::tools::DecompressArgs& args,
   const double t0 = jxl::Now();
   jxl::extras::PackedPixelFile ppf;  // for JxlBasicInfo
   jxl::extras::JXLDecompressParams dparams;
+  dparams.allow_partial_input = args.allow_partial_files;
   dparams.runner = JxlThreadParallelRunner;
   dparams.runner_opaque = runner;
   if (!jxl::extras::DecodeImageJXL(compressed.data(), compressed.size(),
@@ -257,6 +267,12 @@ bool DecompressJxlToPackedPixelFile(
   dparams.runner = JxlThreadParallelRunner;
   dparams.runner_opaque = runner;
   dparams.allow_partial_input = args.allow_partial_files;
+  if (args.bits_per_sample == 0) {
+    dparams.output_bitdepth.type = JXL_BIT_DEPTH_FROM_CODESTREAM;
+  } else if (args.bits_per_sample > 0) {
+    dparams.output_bitdepth.type = JXL_BIT_DEPTH_CUSTOM;
+    dparams.output_bitdepth.bits_per_sample = args.bits_per_sample;
+  }
   const double t0 = jxl::Now();
   if (!jxl::extras::DecodeImageJXL(compressed.data(), compressed.size(),
                                    dparams, decoded_bytes, ppf)) {
@@ -314,16 +330,22 @@ int main(int argc, const char* argv[]) {
     fprintf(stderr, "Read %" PRIuS " compressed bytes.\n", compressed.size());
   }
 
-  if (!args.file_out && !args.quiet) {
+  if (!args.file_out && !args.disable_output) {
+    std::cerr
+        << "No output file specified and --disable_output flag not passed."
+        << std::endl;
+    return EXIT_FAILURE;
+  }
+
+  if (args.file_out && args.disable_output && !args.quiet) {
     fprintf(stderr,
-            "No output file specified.\n"
             "Decoding will be performed, but the result will be discarded.\n");
   }
 
   std::string filename_out;
   std::string base;
   std::string extension;
-  if (args.file_out) {
+  if (args.file_out && !args.disable_output) {
     filename_out = std::string(args.file_out);
     size_t pos = filename_out.find_last_of('.');
     if (pos < filename_out.size()) {
@@ -340,6 +362,10 @@ int main(int argc, const char* argv[]) {
       fprintf(stderr, "Warning: colorspace ignored for EXR output\n");
     }
     args.color_space = force_colorspace;
+  }
+  if (codec == jxl::extras::Codec::kPNM && extension != ".pfm" &&
+      !cmdline.GetOption(args.opt_jpeg_quality_id)->matched()) {
+    args.bits_per_sample = 0;
   }
 
   jpegxl::tools::SpeedStats stats;
@@ -412,11 +438,6 @@ int main(int argc, const char* argv[]) {
     if (!args.quiet) fprintf(stderr, "Decoded to pixels.\n");
     if (args.print_read_bytes) {
       fprintf(stderr, "Decoded bytes: %" PRIuS "\n", decoded_bytes);
-    }
-    if (extension == ".pfm") {
-      ppf.info.bits_per_sample = 32;
-    } else if (args.bits_per_sample > 0) {
-      ppf.info.bits_per_sample = args.bits_per_sample;
     }
 #if JPEGXL_ENABLE_JPEG
     if (encoder) {

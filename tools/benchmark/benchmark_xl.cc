@@ -49,6 +49,7 @@
 #include "tools/benchmark/benchmark_utils.h"
 #include "tools/codec_config.h"
 #include "tools/speed_stats.h"
+#include "tools/ssimulacra2.h"
 
 namespace jxl {
 namespace {
@@ -67,6 +68,20 @@ Status ReadPNG(const std::string& filename, Image3F* image) {
   JXL_CHECK(SetFromFile(filename, extras::ColorHints(), &io));
   *image = CopyImage(*io.Main().color());
   return true;
+}
+
+std::string CodecToExtension(std::string codec_name, char sep) {
+  std::string result;
+  // Add in the parameters of the codec_name in reverse order, so that the
+  // name of the file format (e.g. jxl) is last.
+  int pos = static_cast<int>(codec_name.size()) - 1;
+  while (pos > 0) {
+    int prev = codec_name.find_last_of(sep, pos);
+    if (prev > pos) prev = -1;
+    result += '.' + codec_name.substr(prev + 1, pos - prev);
+    pos = prev - 1;
+  }
+  return result;
 }
 
 void DoCompress(const std::string& filename, const CodecInOut& io,
@@ -152,6 +167,10 @@ void DoCompress(const std::string& filename, const CodecInOut& io,
         }
         valid = false;
       }
+      // TODO(veluca): this is a hack. codec->Decompress should set the bitdepth
+      // correctly, but for jxl it currently sets it from the pixel format (i.e.
+      // 32-bit float).
+      io2.metadata.m.bit_depth = io.metadata.m.bit_depth;
 
       // io2.dec_pixels increases each time, but the total should be independent
       // of decode_reps, so only take the value from the first iteration.
@@ -196,7 +215,7 @@ void DoCompress(const std::string& filename, const CodecInOut& io,
       PROFILER_ZONE("Benchmark stats");
       float distance;
       if (SameSize(ib1, ib2)) {
-        ButteraugliParams params = codec->BaParams();
+        ButteraugliParams params;
         if (ib1.metadata()->IntensityTarget() !=
             ib2.metadata()->IntensityTarget()) {
           fprintf(stderr,
@@ -223,8 +242,9 @@ void DoCompress(const std::string& filename, const CodecInOut& io,
       }
       // Update stats
       s->distance_p_norm +=
-          ComputeDistanceP(distmap, Args()->ba_params, Args()->error_pnorm) *
+          ComputeDistanceP(distmap, ButteraugliParams(), Args()->error_pnorm) *
           input_pixels;
+      s->ssimulacra2 += ComputeSSIMULACRA2(ib1, ib2).Score() * input_pixels;
       s->max_distance = std::max(s->max_distance, distance);
       s->distances.push_back(distance);
       max_distance = std::max(max_distance, distance);
@@ -265,16 +285,8 @@ void DoCompress(const std::string& filename, const CodecInOut& io,
     std::string dir = FileDirName(filename);
     std::string outdir =
         Args()->output_dir.empty() ? dir + "/out" : Args()->output_dir;
-    std::string compressed_fn = outdir + "/" + name;
-    // Add in the parameters of the codec_name in reverse order, so that the
-    // name of the file format (e.g. jxl) is last.
-    int pos = static_cast<int>(codec_name.size()) - 1;
-    while (pos > 0) {
-      int prev = codec_name.find_last_of(':', pos);
-      if (prev > pos) prev = -1;
-      compressed_fn += '.' + codec_name.substr(prev + 1, pos - prev);
-      pos = prev - 1;
-    }
+    std::string compressed_fn =
+        outdir + "/" + name + CodecToExtension(codec_name, ':');
     std::string decompressed_fn = compressed_fn + Args()->output_extension;
 #if JPEGXL_ENABLE_APNG
     std::string heatmap_fn = compressed_fn + ".heatmap.png";
@@ -305,8 +317,10 @@ void DoCompress(const std::string& filename, const CodecInOut& io,
                                                  : ButteraugliFuzzyInverse(1.5);
         float bad = Args()->heatmap_bad > 0.0f ? Args()->heatmap_bad
                                                : ButteraugliFuzzyInverse(0.5);
-        JXL_CHECK(WriteImage(CreateHeatMapImage(distmap, good, bad), inner_pool,
-                             heatmap_fn));
+        if (Args()->save_heatmap) {
+          JXL_CHECK(WriteImage(CreateHeatMapImage(distmap, good, bad),
+                               inner_pool, heatmap_fn));
+        }
       }
     }
   }
@@ -406,12 +420,13 @@ void WriteHtmlReport(const std::string& codec_desc,
                      const std::vector<std::string>& fnames,
                      const std::vector<const Task*>& tasks,
                      const std::vector<const CodecInOut*>& images,
-                     bool self_contained) {
+                     bool add_heatmap, bool self_contained) {
   std::string toggle_js =
       "<script type=\"text/javascript\">\n"
       "  var codecname = '" +
       codec_desc + "';\n";
-  toggle_js += R"(
+  if (add_heatmap) {
+    toggle_js += R"(
   var maintitle = codecname + ' - click images to toggle, press space to' +
       ' toggle all, h to toggle all heatmaps. Zoom in with CTRL+wheel or' +
       ' CTRL+plus.';
@@ -435,7 +450,7 @@ void WriteHtmlReport(const std::string& codec_desc,
       hm.style.display = 'block';
     }
   }
-  function toggle3(i) {
+  function toggle(i) {
     for (index = counter.length; index <= i; index++) {
       counter.push(1);
     }
@@ -460,6 +475,48 @@ void WriteHtmlReport(const std::string& codec_desc,
   };
 </script>
 )";
+  } else {
+    toggle_js += R"(
+  var maintitle = codecname + ' - click images to toggle, press space to' +
+      ' toggle all. Zoom in with CTRL+wheel or CTRL+plus.';
+  document.title = maintitle;
+  var counter = [];
+  function setState(i, s) {
+    var preview = document.getElementById("preview" + i);
+    var orig = document.getElementById("orig" + i);
+    if (s == 0) {
+      preview.style.display = 'none';
+      orig.style.display = 'block';
+    } else if (s == 1) {
+      preview.style.display = 'block';
+      orig.style.display = 'none';
+    }
+  }
+  function toggle(i) {
+    for (index = counter.length; index <= i; index++) {
+      counter.push(1);
+    }
+    setState(i, counter[i]);
+    counter[i] = 1 - counter[i];
+    document.title = maintitle;
+  }
+  var toggleall_state = 1;
+  document.body.onkeydown = function(e) {
+    // space (32) to toggle orig/compr
+    if (e.keyCode == 32) {
+      var divs = document.getElementsByTagName('div');
+      toggleall_state = 1 - toggleall_state;
+      document.title = codecname + ' - ' + (toggleall_state == 0 ?
+          'originals' : 'compressed');
+      for (var i = 0; i < divs.length; i++) {
+        setState(i, toggleall_state);
+      }
+      return false;
+    }
+  };
+</script>
+)";
+  }
   std::string out_html;
   std::string outdir;
   out_html += "<body bgcolor=\"#000\">\n";
@@ -471,8 +528,12 @@ void WriteHtmlReport(const std::string& codec_desc,
     std::string name = FileBaseName(fnames[i]);
     std::string dir = FileDirName(fnames[i]);
     outdir = Args()->output_dir.empty() ? dir + "/out" : Args()->output_dir;
-    std::string name_out = name + "." + codec_name + Args()->output_extension;
-    std::string heatmap_out = name + "." + codec_name + ".heatmap.png";
+    std::string name_out = name + CodecToExtension(codec_name, '_');
+    if (Args()->html_report_use_decompressed) {
+      name_out += Args()->output_extension;
+    }
+    std::string heatmap_out =
+        name + CodecToExtension(codec_name, '_') + ".heatmap.png";
 
     std::string fname_orig = fnames[i];
     std::string fname_out = outdir + "/" + name_out;
@@ -500,24 +561,20 @@ void WriteHtmlReport(const std::string& codec_desc,
     double max_dist = tasks[i]->stats.max_distance;
     std::string compressed_title = StringPrintf(
         "compressed. bpp: %f, pnorm: %f, max dist: %f", bpp, pnorm, max_dist);
-    out_html += "<div onclick=\"toggle3(" + number +
+    out_html += "<div onclick=\"toggle(" + number +
                 ");\" style=\"display:inline-block;width:" + html_width +
                 ";height:" + html_height +
                 ";\">\n"
                 "  <img title=\"" +
                 compressed_title + "\" id=\"preview" + number + "\" src=";
-    out_html += "\"" + url_out + "\"";
-    out_html +=
-        " style=\"display:block;\"/>\n"
-        "  <img title=\"original\" id=\"orig" +
-        number + "\" src=";
-    out_html += "\"" + url_orig + "\"";
-    out_html +=
-        " style=\"display:none;\"/>\n"
-        "  <img title=\"heatmap\" id=\"hm" +
-        number + "\" src=";
-    out_html += "\"" + url_heatmap + "\"";
-    out_html += " style=\"display:none;\"/>\n</div>\n";
+    out_html += "\"" + url_out + "\"style=\"display:block;\"/>\n";
+    out_html += "  <img title=\"original\" id=\"orig" + number + "\" src=";
+    out_html += "\"" + url_orig + "\"style=\"display:none;\"/>\n";
+    if (add_heatmap) {
+      out_html = "  <img title=\"heatmap\" id=\"hm" + number + "\" src=";
+      out_html += "\"" + url_heatmap + "\"style=\"display:none;\"/>\n";
+    }
+    out_html += "</div>\n";
   }
   out_html += "</body>\n";
   out_html += toggle_js;
@@ -680,6 +737,7 @@ struct StatPrinter {
 
     if (Args()->write_html_report) {
       WriteHtmlReport(method, *fnames_, tasks, images,
+                      Args()->save_heatmap && Args()->html_report_add_heatmap,
                       Args()->html_report_self_contained);
     }
 

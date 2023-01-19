@@ -102,13 +102,8 @@ Status Encode(const CodecInOut& io, const extras::Codec codec,
         encoder = extras::GetPPMEncoder();
       } else {
         format.data_type = JXL_TYPE_FLOAT;
-        format.endianness = JXL_NATIVE_ENDIAN;
+        format.endianness = JXL_LITTLE_ENDIAN;
         encoder = extras::GetPFMEncoder();
-      }
-      if (!c_desired.IsSRGB()) {
-        JXL_WARNING(
-            "PNM encoder cannot store custom ICC profile; decoder "
-            "will need hint key=color_space to get the same values");
       }
       break;
     case extras::Codec::kPGX:
@@ -135,6 +130,10 @@ Status Encode(const CodecInOut& io, const extras::Codec codec,
   extras::PackedPixelFile ppf;
   JXL_RETURN_IF_ERROR(
       ConvertCodecInOutToPackedPixelFile(io, format, c_desired, pool, &ppf));
+  ppf.info.bits_per_sample = bits_per_sample;
+  if (format.data_type == JXL_TYPE_FLOAT) {
+    ppf.info.exponent_bits_per_sample = 8;
+  }
   extras::EncodedImage encoded_image;
   JXL_RETURN_IF_ERROR(encoder->Encode(ppf, &encoded_image, pool));
   JXL_ASSERT(encoded_image.bitstreams.size() == 1);

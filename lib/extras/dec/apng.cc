@@ -57,6 +57,9 @@ namespace extras {
 
 namespace {
 
+constexpr unsigned char kExifSignature[6] = {0x45, 0x78, 0x69,
+                                             0x66, 0x00, 0x00};
+
 /* hIST chunk tail is not proccesed properly; skip this chunk completely;
    see https://github.com/glennrp/libpng/pull/413 */
 const png_byte kIgnoredPngChunks[] = {
@@ -73,8 +76,142 @@ Status DecodeSRGB(const unsigned char* payload, const size_t payload_size,
   if (payload_size != 1) return JXL_FAILURE("Wrong sRGB size");
   // (PNG uses the same values as ICC.)
   if (payload[0] >= 4) return JXL_FAILURE("Invalid Rendering Intent");
+  color_encoding->white_point = JXL_WHITE_POINT_D65;
+  color_encoding->primaries = JXL_PRIMARIES_SRGB;
+  color_encoding->transfer_function = JXL_TRANSFER_FUNCTION_SRGB;
   color_encoding->rendering_intent =
       static_cast<JxlRenderingIntent>(payload[0]);
+  return true;
+}
+
+// If the cICP profile is not fully supported, return false and leave
+// color_encoding unmodified.
+Status DecodeCICP(const unsigned char* payload, const size_t payload_size,
+                  JxlColorEncoding* color_encoding) {
+  if (payload_size != 4) return JXL_FAILURE("Wrong cICP size");
+  JxlColorEncoding color_enc = *color_encoding;
+
+  // From https://www.itu.int/rec/T-REC-H.273-202107-I/en
+  if (payload[0] == 1) {
+    // IEC 61966-2-1 sRGB
+    color_enc.primaries = JXL_PRIMARIES_SRGB;
+    color_enc.white_point = JXL_WHITE_POINT_D65;
+  } else if (payload[0] == 4) {
+    // Rec. ITU-R BT.470-6 System M
+    color_enc.primaries = JXL_PRIMARIES_CUSTOM;
+    color_enc.primaries_red_xy[0] = 0.67;
+    color_enc.primaries_red_xy[1] = 0.33;
+    color_enc.primaries_green_xy[0] = 0.21;
+    color_enc.primaries_green_xy[1] = 0.71;
+    color_enc.primaries_blue_xy[0] = 0.14;
+    color_enc.primaries_blue_xy[1] = 0.08;
+    color_enc.white_point = JXL_WHITE_POINT_CUSTOM;
+    color_enc.white_point_xy[0] = 0.310;
+    color_enc.white_point_xy[1] = 0.316;
+  } else if (payload[0] == 5) {
+    // Rec. ITU-R BT.1700-0 625 PAL and 625 SECAM
+    color_enc.primaries = JXL_PRIMARIES_CUSTOM;
+    color_enc.primaries_red_xy[0] = 0.64;
+    color_enc.primaries_red_xy[1] = 0.33;
+    color_enc.primaries_green_xy[0] = 0.29;
+    color_enc.primaries_green_xy[1] = 0.60;
+    color_enc.primaries_blue_xy[0] = 0.15;
+    color_enc.primaries_blue_xy[1] = 0.06;
+    color_enc.white_point = JXL_WHITE_POINT_D65;
+  } else if (payload[0] == 6 || payload[0] == 7) {
+    // SMPTE ST 170 (2004) / SMPTE ST 240 (1999)
+    color_enc.primaries = JXL_PRIMARIES_CUSTOM;
+    color_enc.primaries_red_xy[0] = 0.630;
+    color_enc.primaries_red_xy[1] = 0.340;
+    color_enc.primaries_green_xy[0] = 0.310;
+    color_enc.primaries_green_xy[1] = 0.595;
+    color_enc.primaries_blue_xy[0] = 0.155;
+    color_enc.primaries_blue_xy[1] = 0.070;
+    color_enc.white_point = JXL_WHITE_POINT_D65;
+  } else if (payload[0] == 8) {
+    // Generic film (colour filters using Illuminant C)
+    color_enc.primaries = JXL_PRIMARIES_CUSTOM;
+    color_enc.primaries_red_xy[0] = 0.681;
+    color_enc.primaries_red_xy[1] = 0.319;
+    color_enc.primaries_green_xy[0] = 0.243;
+    color_enc.primaries_green_xy[1] = 0.692;
+    color_enc.primaries_blue_xy[0] = 0.145;
+    color_enc.primaries_blue_xy[1] = 0.049;
+    color_enc.white_point = JXL_WHITE_POINT_CUSTOM;
+    color_enc.white_point_xy[0] = 0.310;
+    color_enc.white_point_xy[1] = 0.316;
+  } else if (payload[0] == 9) {
+    // Rec. ITU-R BT.2100-2
+    color_enc.primaries = JXL_PRIMARIES_2100;
+    color_enc.white_point = JXL_WHITE_POINT_D65;
+  } else if (payload[0] == 10) {
+    // CIE 1931 XYZ
+    color_enc.primaries = JXL_PRIMARIES_CUSTOM;
+    color_enc.primaries_red_xy[0] = 1;
+    color_enc.primaries_red_xy[1] = 0;
+    color_enc.primaries_green_xy[0] = 0;
+    color_enc.primaries_green_xy[1] = 1;
+    color_enc.primaries_blue_xy[0] = 0;
+    color_enc.primaries_blue_xy[1] = 0;
+    color_enc.white_point = JXL_WHITE_POINT_E;
+  } else if (payload[0] == 11) {
+    // SMPTE RP 431-2 (2011)
+    color_enc.primaries = JXL_PRIMARIES_P3;
+    color_enc.white_point = JXL_WHITE_POINT_DCI;
+  } else if (payload[0] == 12) {
+    // SMPTE EG 432-1 (2010)
+    color_enc.primaries = JXL_PRIMARIES_P3;
+    color_enc.white_point = JXL_WHITE_POINT_D65;
+  } else if (payload[0] == 22) {
+    color_enc.primaries = JXL_PRIMARIES_CUSTOM;
+    color_enc.primaries_red_xy[0] = 0.630;
+    color_enc.primaries_red_xy[1] = 0.340;
+    color_enc.primaries_green_xy[0] = 0.295;
+    color_enc.primaries_green_xy[1] = 0.605;
+    color_enc.primaries_blue_xy[0] = 0.155;
+    color_enc.primaries_blue_xy[1] = 0.077;
+    color_enc.white_point = JXL_WHITE_POINT_D65;
+  } else {
+    JXL_WARNING("Unsupported primaries specified in cICP chunk: %d",
+                static_cast<int>(payload[0]));
+    return false;
+  }
+
+  if (payload[1] == 1 || payload[1] == 6 || payload[1] == 14 ||
+      payload[1] == 15) {
+    // Rec. ITU-R BT.709-6
+    color_enc.transfer_function = JXL_TRANSFER_FUNCTION_709;
+  } else if (payload[1] == 4) {
+    // Rec. ITU-R BT.1700-0 625 PAL and 625 SECAM
+    color_enc.transfer_function = JXL_TRANSFER_FUNCTION_GAMMA;
+    color_enc.gamma = 1 / 2.2;
+  } else if (payload[1] == 5) {
+    // Rec. ITU-R BT.470-6 System B, G
+    color_enc.transfer_function = JXL_TRANSFER_FUNCTION_GAMMA;
+    color_enc.gamma = 1 / 2.8;
+  } else if (payload[1] == 8 || payload[1] == 13 || payload[1] == 16 ||
+             payload[1] == 17 || payload[1] == 18) {
+    // These codes all match the corresponding JXL enum values
+    color_enc.transfer_function = static_cast<JxlTransferFunction>(payload[1]);
+  } else {
+    JXL_WARNING("Unsupported transfer function specified in cICP chunk: %d",
+                static_cast<int>(payload[1]));
+    return false;
+  }
+
+  if (payload[2] != 0) {
+    JXL_WARNING("Unsupported color space specified in cICP chunk: %d",
+                static_cast<int>(payload[2]));
+    return false;
+  }
+  if (payload[3] != 1) {
+    JXL_WARNING("Unsupported full-range flag specified in cICP chunk: %d",
+                static_cast<int>(payload[3]));
+    return false;
+  }
+  // cICP has no rendering intent, so use the default
+  color_enc.rendering_intent = JXL_RENDERING_INTENT_RELATIVE;
+  *color_encoding = color_enc;
   return true;
 }
 
@@ -129,6 +266,11 @@ class BlobsReaderPNG {
       return false;
     }
     if (type == "exif") {
+      // Remove "Exif\0\0" prefix if present
+      if (bytes.size() >= sizeof kExifSignature &&
+          memcmp(bytes.data(), kExifSignature, sizeof kExifSignature) == 0) {
+        bytes.erase(bytes.begin(), bytes.begin() + sizeof kExifSignature);
+      }
       if (!metadata->exif.empty()) {
         JXL_WARNING("overwriting EXIF (%" PRIuS " bytes) with base16 (%" PRIuS
                     " bytes)",
@@ -228,6 +370,10 @@ class BlobsReaderPNG {
     // We parsed so far a \n, some number of non \n characters and are now
     // pointing at a \n.
     if (*(pos++) != '\n') return false;
+    // Skip leading spaces
+    while (pos < encoded_end && *pos == ' ') {
+      pos++;
+    }
     uint32_t bytes_to_decode = 0;
     JXL_RETURN_IF_ERROR(DecodeDecimal(&pos, encoded_end, &bytes_to_decode));
 
@@ -274,6 +420,7 @@ constexpr uint32_t kId_fcTL = 0x4C546366;
 constexpr uint32_t kId_IDAT = 0x54414449;
 constexpr uint32_t kId_fdAT = 0x54416466;
 constexpr uint32_t kId_IEND = 0x444E4549;
+constexpr uint32_t kId_cICP = 0x50434963;
 constexpr uint32_t kId_iCCP = 0x50434369;
 constexpr uint32_t kId_sRGB = 0x42475273;
 constexpr uint32_t kId_gAMA = 0x414D4167;
@@ -457,7 +604,8 @@ Status DecodeImageAPNG(const Span<const uint8_t> bytes,
 
   ppf->frames.clear();
 
-  bool have_color = false, have_srgb = false;
+  bool have_color = false;
+  bool have_cicp = false, have_iccp = false, have_srgb = false;
   bool errorstate = true;
   if (id == kId_IHDR && chunkIHDR.size() == 25) {
     x0 = 0;
@@ -478,6 +626,7 @@ Status DecodeImageAPNG(const Span<const uint8_t> bytes,
     ppf->color_encoding.white_point = JXL_WHITE_POINT_D65;
     ppf->color_encoding.primaries = JXL_PRIMARIES_SRGB;
     ppf->color_encoding.transfer_function = JXL_TRANSFER_FUNCTION_SRGB;
+    ppf->color_encoding.rendering_intent = JXL_RENDERING_INTENT_RELATIVE;
 
     if (!processing_start(png_ptr, info_ptr, (void*)&frameRaw, hasInfo,
                           chunkIHDR, chunksInfo)) {
@@ -613,7 +762,17 @@ Status DecodeImageAPNG(const Span<const uint8_t> bytes,
                               chunk.size() - 4)) {
             break;
           }
-        } else if (id == kId_iCCP) {
+        } else if (id == kId_cICP) {
+          // Color profile chunks: cICP has the highest priority, followed by
+          // iCCP and sRGB (which shouldn't co-exist, but if they do, we use
+          // iCCP), followed finally by gAMA and cHRM.
+          if (DecodeCICP(chunk.data() + 8, chunk.size() - 12,
+                         &ppf->color_encoding)) {
+            have_cicp = true;
+            have_color = true;
+            ppf->icc.clear();
+          }
+        } else if (!have_cicp && id == kId_iCCP) {
           if (processing_data(png_ptr, info_ptr, chunk.data(), chunk.size())) {
             JXL_WARNING("Corrupt iCCP chunk");
             break;
@@ -630,19 +789,20 @@ Status DecodeImageAPNG(const Span<const uint8_t> bytes,
           if (ok && proflen) {
             ppf->icc.assign(profile, profile + proflen);
             have_color = true;
+            have_iccp = true;
           } else {
             // TODO(eustas): JXL_WARNING?
           }
-        } else if (id == kId_sRGB) {
+        } else if (!have_cicp && !have_iccp && id == kId_sRGB) {
           JXL_RETURN_IF_ERROR(DecodeSRGB(chunk.data() + 8, chunk.size() - 12,
                                          &ppf->color_encoding));
           have_srgb = true;
           have_color = true;
-        } else if (id == kId_gAMA) {
+        } else if (!have_cicp && !have_srgb && !have_iccp && id == kId_gAMA) {
           JXL_RETURN_IF_ERROR(DecodeGAMA(chunk.data() + 8, chunk.size() - 12,
                                          &ppf->color_encoding));
           have_color = true;
-        } else if (id == kId_cHRM) {
+        } else if (!have_cicp && !have_srgb && !have_iccp && id == kId_cHRM) {
           JXL_RETURN_IF_ERROR(DecodeCHRM(chunk.data() + 8, chunk.size() - 12,
                                          &ppf->color_encoding));
           have_color = true;
@@ -665,12 +825,6 @@ Status DecodeImageAPNG(const Span<const uint8_t> bytes,
       }
     }
 
-    if (have_srgb) {
-      ppf->color_encoding.white_point = JXL_WHITE_POINT_D65;
-      ppf->color_encoding.primaries = JXL_PRIMARIES_SRGB;
-      ppf->color_encoding.transfer_function = JXL_TRANSFER_FUNCTION_SRGB;
-      ppf->color_encoding.rendering_intent = JXL_RENDERING_INTENT_PERCEPTUAL;
-    }
     JXL_RETURN_IF_ERROR(ApplyColorHints(
         color_hints, have_color, ppf->info.num_color_channels == 1, ppf));
   }
@@ -706,31 +860,29 @@ Status DecodeImageAPNG(const Span<const uint8_t> bytes,
     size_t xsize = frame.data.xsize;
     size_t ysize = frame.data.ysize;
     if (previous_frame_should_be_cleared) {
-      size_t xs = frame.data.xsize;
-      size_t ys = frame.data.ysize;
       size_t px0 = frames[i - 1].x0;
       size_t py0 = frames[i - 1].y0;
       size_t pxs = frames[i - 1].xsize;
       size_t pys = frames[i - 1].ysize;
-      if (px0 >= x0 && py0 >= y0 && px0 + pxs <= x0 + xs &&
-          py0 + pys <= y0 + ys && frame.blend_op == BLEND_OP_SOURCE &&
+      if (px0 >= x0 && py0 >= y0 && px0 + pxs <= x0 + xsize &&
+          py0 + pys <= y0 + ysize && frame.blend_op == BLEND_OP_SOURCE &&
           use_for_next_frame) {
         // If the previous frame is entirely contained in the current frame and
         // we are using BLEND_OP_SOURCE, nothing special needs to be done.
         ppf->frames.emplace_back(std::move(frame.data));
-      } else if (px0 == x0 && py0 == y0 && px0 + pxs == x0 + xs &&
-                 py0 + pys == y0 + ys && use_for_next_frame) {
+      } else if (px0 == x0 && py0 == y0 && px0 + pxs == x0 + xsize &&
+                 py0 + pys == y0 + ysize && use_for_next_frame) {
         // If the new frame has the same size as the old one, but we are
         // blending, we can instead just not blend.
         should_blend = false;
         ppf->frames.emplace_back(std::move(frame.data));
-      } else if (px0 <= x0 && py0 <= y0 && px0 + pxs >= x0 + xs &&
-                 py0 + pys >= y0 + ys && use_for_next_frame) {
+      } else if (px0 <= x0 && py0 <= y0 && px0 + pxs >= x0 + xsize &&
+                 py0 + pys >= y0 + ysize && use_for_next_frame) {
         // If the new frame is contained within the old frame, we can pad the
         // new frame with zeros and not blend.
         PackedImage new_data(pxs, pys, frame.data.format);
         memset(new_data.pixels(), 0, new_data.pixels_size);
-        for (size_t y = 0; y < ys; y++) {
+        for (size_t y = 0; y < ysize; y++) {
           size_t bytes_per_pixel =
               PackedImage::BitsPerChannel(new_data.format.data_type) *
               new_data.format.num_channels / 8;
@@ -739,7 +891,7 @@ Status DecodeImageAPNG(const Span<const uint8_t> bytes,
                      bytes_per_pixel * (x0 - px0),
                  static_cast<const uint8_t*>(frame.data.pixels()) +
                      frame.data.stride * y,
-                 xs * bytes_per_pixel);
+                 xsize * bytes_per_pixel);
         }
 
         x0 = px0;
@@ -756,12 +908,14 @@ Status DecodeImageAPNG(const Span<const uint8_t> bytes,
         auto& pframe = ppf->frames.back();
         pframe.frame_info.layer_info.crop_x0 = px0;
         pframe.frame_info.layer_info.crop_y0 = py0;
-        pframe.frame_info.layer_info.xsize = frame.xsize;
-        pframe.frame_info.layer_info.ysize = frame.ysize;
+        pframe.frame_info.layer_info.xsize = pxs;
+        pframe.frame_info.layer_info.ysize = pys;
         pframe.frame_info.duration = 0;
-        pframe.frame_info.layer_info.have_crop = 0;
+        bool is_full_size = px0 == 0 && py0 == 0 && pxs == ppf->info.xsize &&
+                            pys == ppf->info.ysize;
+        pframe.frame_info.layer_info.have_crop = is_full_size ? 0 : 1;
         pframe.frame_info.layer_info.blend_info.blendmode = JXL_BLEND_REPLACE;
-        pframe.frame_info.layer_info.blend_info.source = 0;
+        pframe.frame_info.layer_info.blend_info.source = 1;
         pframe.frame_info.layer_info.save_as_reference = 1;
         ppf->frames.emplace_back(std::move(frame.data));
       }
@@ -780,7 +934,7 @@ Status DecodeImageAPNG(const Span<const uint8_t> bytes,
     bool is_full_size = x0 == 0 && y0 == 0 && xsize == ppf->info.xsize &&
                         ysize == ppf->info.ysize;
     pframe.frame_info.layer_info.have_crop = is_full_size ? 0 : 1;
-    pframe.frame_info.layer_info.blend_info.source = should_blend ? 1 : 0;
+    pframe.frame_info.layer_info.blend_info.source = 1;
     pframe.frame_info.layer_info.blend_info.alpha = 0;
     pframe.frame_info.layer_info.save_as_reference = use_for_next_frame ? 1 : 0;
 

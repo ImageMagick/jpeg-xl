@@ -56,6 +56,20 @@ struct PixelCallback {
   void* init_opaque = nullptr;
 };
 
+struct ImageOutput {
+  // Pixel format of the output pixels, used for buffer and callback output.
+  JxlPixelFormat format;
+  // Output bit depth for unsigned data types, used for float to int conversion.
+  size_t bits_per_sample;
+  // Callback for line-by-line output.
+  PixelCallback callback;
+  // Pixel buffer for image output.
+  void* buffer;
+  size_t buffer_size;
+  // Length of a row of image_buffer in bytes (based on oriented width).
+  size_t stride;
+};
+
 // Per-frame decoder state. All the images here should be accessed through a
 // group rect (either with block units or pixel units).
 struct PassesDecoderState {
@@ -77,30 +91,22 @@ struct PassesDecoderState {
   // Sigma values for EPF.
   ImageF sigma;
 
-  // RGB8 output buffer. If not nullptr, image data will be written to this
-  // buffer instead of being written to the output ImageBundle. The image data
-  // is assumed to have the stride given by `rgb_stride`, hence row `i` starts
-  // at position `i * rgb_stride`.
-  uint8_t* rgb_output;
-  size_t rgb_stride = 0;
+  // Image dimensions before applying undo_orientation.
+  size_t width;
+  size_t height;
+  ImageOutput main_output;
+  std::vector<ImageOutput> extra_output;
 
   // Whether to use int16 float-XYB-to-uint8-srgb conversion.
   bool fast_xyb_srgb8_conversion;
 
-  // If true, rgb_output or callback output is RGBA using 4 instead of 3 bytes
-  // per pixel.
-  bool rgb_output_is_rgba;
   // If true, the RGBA output will be unpremultiplied before writing to the
-  // output callback (the output buffer case is handled in ConvertToExternal).
+  // output.
   bool unpremul_alpha;
 
-  // Callback for line-by-line output.
-  PixelCallback pixel_callback;
-
-  // Buffer of upsampling * kApplyImageFeaturesTileDim ones.
-  std::vector<float> opaque_alpha;
-  // One row per thread
-  std::vector<std::vector<float>> pixel_callback_rows;
+  // The render pipeline will apply this orientation to bring the image to the
+  // intended display orientation.
+  Orientation undo_orientation;
 
   // Used for seeding noise.
   size_t visible_frame_index = 0;
@@ -136,11 +142,14 @@ struct PassesDecoderState {
     b_dm_multiplier =
         std::pow(1 / (1.25f), shared->frame_header.b_qm_scale - 2.0f);
 
-    rgb_output = nullptr;
-    rgb_output_is_rgba = false;
-    unpremul_alpha = false;
+    main_output.callback = PixelCallback();
+    main_output.buffer = nullptr;
+    extra_output.clear();
+
     fast_xyb_srgb8_conversion = false;
-    pixel_callback = PixelCallback();
+    unpremul_alpha = false;
+    undo_orientation = Orientation::kIdentity;
+
     used_acs = 0;
 
     upsampler8x = GetUpsamplingStage(shared->metadata->transform_data, 0, 3);

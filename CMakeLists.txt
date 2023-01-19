@@ -100,6 +100,10 @@ set(JPEGXL_ENABLE_DEVTOOLS false CACHE BOOL
     "Build JPEGXL developer tools.")
 set(JPEGXL_ENABLE_TOOLS true CACHE BOOL
     "Build JPEGXL user tools: cjxl and djxl.")
+set(JPEGXL_ENABLE_JPEGLI true CACHE BOOL
+    "Build jpegli library.")
+set(JPEGXL_ENABLE_JPEGLI_LIBJPEG true CACHE BOOL
+    "Build libjpeg.so shared library based on jpegli.")
 set(JPEGXL_ENABLE_DOXYGEN true CACHE BOOL
     "Generate C API documentation using Doxygen.")
 set(JPEGXL_ENABLE_MANPAGES true CACHE BOOL
@@ -135,6 +139,10 @@ set(JPEGXL_ENABLE_SIZELESS_VECTORS false CACHE BOOL
 set(JPEGXL_ENABLE_TRANSCODE_JPEG true CACHE BOOL
     "Builds in support for decoding transcoded JXL files back to JPEG,\
  disabling it makes the decoder reject JXL_DEC_JPEG_RECONSTRUCTION events,\
+ (default enabled)")
+set(JPEGXL_ENABLE_BOXES true CACHE BOOL
+    "Builds in support for decoding boxes in JXL files,\
+ disabling it makes the decoder reject JXL_DEC_BOX events,\
  (default enabled)")
 set(JPEGXL_STATIC false CACHE BOOL
     "Build tools as static binaries.")
@@ -242,6 +250,12 @@ if(JPEGXL_STATIC)
     endif()
   endif()
 endif()  # JPEGXL_STATIC
+
+if (JPEGXL_EMSCRIPTEN)
+  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pthread")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pthread")
+endif()
 
 if (CXX_MACRO_PREFIX_MAP)
   add_compile_options(-fmacro-prefix-map=${CMAKE_CURRENT_SOURCE_DIR}=.)
@@ -401,7 +415,7 @@ if(JPEGXL_ENABLE_MANPAGES)
 find_program(ASCIIDOC a2x)
 if(ASCIIDOC)
 file(STRINGS "${ASCIIDOC}" ASCIIDOC_SHEBANG LIMIT_COUNT 1)
-if(ASCIIDOC_SHEBANG MATCHES "/sh|/bash")
+if(ASCIIDOC_SHEBANG MATCHES "/sh|/bash" OR MINGW)
   set(ASCIIDOC_PY_FOUND ON)
   # Run the program directly and set ASCIIDOC as empty.
   set(ASCIIDOC_PY "${ASCIIDOC}")

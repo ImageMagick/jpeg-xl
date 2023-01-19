@@ -66,8 +66,6 @@ set(TEST_FILES
 
 # Test-only library code.
 set(TESTLIB_FILES
-  jxl/codec_y4m_testonly.cc
-  jxl/codec_y4m_testonly.h
   jxl/dct_for_test.h
   jxl/dec_transforms_testonly.cc
   jxl/dec_transforms_testonly.h
@@ -109,7 +107,7 @@ foreach (TESTFILE IN LISTS TEST_FILES)
     set_target_properties(${TESTNAME} PROPERTIES LINK_FLAGS "\
       -O1 \
       -s USE_LIBPNG=1 \
-      -s TOTAL_MEMORY=1536MB \
+      -s ALLOW_MEMORY_GROWTH=1 \
       -s SINGLE_FILE=1 \
       -s PROXY_TO_PTHREAD \
       -s EXIT_RUNTIME=1 \

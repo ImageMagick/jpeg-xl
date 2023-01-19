@@ -141,8 +141,12 @@ if(JPEGXL_ENABLE_TOOLS)
   )
   list(APPEND TOOL_BINARIES djxl)
 
-  add_executable(cjpeg_hdr cjpeg_hdr.cc)
-  list(APPEND INTERNAL_TOOL_BINARIES cjpeg_hdr)
+  find_package(JPEG)
+  if(JPEG_FOUND)
+    # Depends on parts of jxl_extras that are only built if libjpeg is found.
+    add_executable(cjpeg_hdr cjpeg_hdr.cc)
+    list(APPEND INTERNAL_TOOL_BINARIES cjpeg_hdr)
+  endif()
 
   add_executable(jxlinfo jxlinfo.c)
   target_link_libraries(jxlinfo jxl)
@@ -164,12 +168,14 @@ if(JPEGXL_ENABLE_DEVTOOLS)
     butteraugli_main
     decode_and_encode
     display_to_hlg
+    exr_to_pq
     pq_to_hlg
     render_hlg
     tone_map
     texture_to_cube
     generate_lut_template
     ssimulacra_main
+    ssimulacra2
     xyb_range
     jxl_from_tree
   )
@@ -177,9 +183,11 @@ if(JPEGXL_ENABLE_DEVTOOLS)
   add_executable(fuzzer_corpus fuzzer_corpus.cc)
 
   add_executable(ssimulacra_main ssimulacra_main.cc ssimulacra.cc)
+  add_executable(ssimulacra2 ssimulacra2_main.cc ssimulacra2.cc)
   add_executable(butteraugli_main butteraugli_main.cc)
   add_executable(decode_and_encode decode_and_encode.cc)
   add_executable(display_to_hlg hdr/display_to_hlg.cc)
+  add_executable(exr_to_pq hdr/exr_to_pq.cc)
   add_executable(pq_to_hlg hdr/pq_to_hlg.cc)
   add_executable(render_hlg hdr/render_hlg.cc)
   add_executable(tone_map hdr/tone_map.cc)
@@ -207,6 +215,7 @@ if(JPEGXL_ENABLE_BENCHMARK AND JPEGXL_ENABLE_TOOLS)
     benchmark/benchmark_codec_custom.h
     benchmark/benchmark_codec_jxl.cc
     benchmark/benchmark_codec_jxl.h
+    ssimulacra2.cc
     ../third_party/dirent.cc
   )
   target_link_libraries(benchmark_xl Threads::Threads)
@@ -245,11 +254,16 @@ if(JPEGXL_ENABLE_BENCHMARK AND JPEGXL_ENABLE_TOOLS)
     # Use the static version of webp if available.
     find_library(WebP_STATIC_LINK_LIBRARY NAMES libwebp.a
         PATHS "${WebP_LIBDIR}")
+    find_library(SharpYuv_STATIC_LINK_LIBRARY NAMES libsharpyuv.a
+        PATHS "${WebP_LIBDIR}")
     if(NOT WebP_STATIC_LINK_LIBRARY)
       message(WARNING "Using dynamic libwebp")
       target_link_libraries(benchmark_xl PkgConfig::WebP)
     else()
       target_link_libraries(benchmark_xl "${WebP_STATIC_LINK_LIBRARY}")
+      if(SharpYuv_STATIC_LINK_LIBRARY)
+        target_link_libraries(benchmark_xl "${SharpYuv_STATIC_LINK_LIBRARY}")
+      endif()
       target_include_directories(benchmark_xl
           PRIVATE ${WebP_STATIC_INCLUDE_DIRS})
       target_compile_options(benchmark_xl PRIVATE ${WebP_STATIC_CFLAGS_OTHER})
@@ -279,7 +293,13 @@ list(APPEND TOOL_BINARIES ${INTERNAL_TOOL_BINARIES})
 
 foreach(BINARY IN LISTS TOOL_BINARIES)
   if(JPEGXL_EMSCRIPTEN)
-    set_target_properties(${BINARY} PROPERTIES LINK_FLAGS "-s USE_LIBPNG=1")
+    set(JXL_WASM_TOOLS_LINK_FLAGS "\
+      -s USE_LIBPNG=1 \
+      -s ALLOW_MEMORY_GROWTH=1 \
+      -s USE_PTHREADS=1 \
+      -s PTHREAD_POOL_SIZE=16 \
+    ")
+    set_target_properties(${BINARY} PROPERTIES LINK_FLAGS "${JXL_WASM_TOOLS_LINK_FLAGS}")
   endif()
 endforeach()
 
@@ -372,35 +392,7 @@ endif()
 
 add_subdirectory(box)
 add_subdirectory(conformance)
-
-
-if (JPEGXL_ENABLE_TOOLS AND JPEGXL_EMSCRIPTEN)
-# WASM API facade.
-add_executable(jxl_emcc jxl_emcc.cc)
-target_link_libraries(jxl_emcc
-    jxl_extras-static
-)
-set_target_properties(jxl_emcc PROPERTIES LINK_FLAGS "\
-  -O3\
-  --closure 1 \
-  -s TOTAL_MEMORY=75mb \
-  -s USE_LIBPNG=1 \
-  -s DISABLE_EXCEPTION_CATCHING=1 \
-  -s MODULARIZE=1 \
-  -s FILESYSTEM=0 \
-  -s USE_PTHREADS=1 \
-  -s PTHREAD_POOL_SIZE=4 \
-  -s EXPORT_NAME=\"JxlCodecModule\"\
-  -s \"EXPORTED_FUNCTIONS=[\
-    _malloc,\
-    _free,\
-    _jxlCreateInstance,\
-    _jxlDestroyInstance,\
-    _jxlFlush,\
-    _jxlProcessInput\
-  ]\"\
-")
-endif ()  # JPEGXL_ENABLE_TOOLS AND JPEGXL_EMSCRIPTEN
+add_subdirectory(wasm_demo)
 
 if(JPEGXL_ENABLE_JNI)
 find_package(JNI QUIET)

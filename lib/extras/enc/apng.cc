@@ -52,14 +52,19 @@ namespace extras {
 
 namespace {
 
+constexpr unsigned char kExifSignature[6] = {0x45, 0x78, 0x69,
+                                             0x66, 0x00, 0x00};
+
 class APNGEncoder : public Encoder {
  public:
   std::vector<JxlPixelFormat> AcceptedFormats() const override {
     std::vector<JxlPixelFormat> formats;
     for (const uint32_t num_channels : {1, 2, 3, 4}) {
       for (const JxlDataType data_type : {JXL_TYPE_UINT8, JXL_TYPE_UINT16}) {
-        formats.push_back(JxlPixelFormat{num_channels, data_type,
-                                         JXL_BIG_ENDIAN, /*align=*/0});
+        for (JxlEndianness endianness : {JXL_BIG_ENDIAN, JXL_LITTLE_ENDIAN}) {
+          formats.push_back(
+              JxlPixelFormat{num_channels, data_type, endianness, /*align=*/0});
+        }
       }
     }
     return formats;
@@ -96,12 +101,23 @@ class BlobsWriterPNG {
       // identity to avoid repeated orientation.
       std::vector<uint8_t> exif = blobs.exif;
       ResetExifOrientation(exif);
+      // By convention, the data is prefixed with "Exif\0\0" when stored in
+      // the legacy (and non-standard) "Raw profile type exif" text chunk
+      // currently used here.
+      // TODO: Store Exif data in an eXIf chunk instead, which always begins
+      // with the TIFF header.
+      if (exif.size() >= sizeof kExifSignature &&
+          memcmp(exif.data(), kExifSignature, sizeof kExifSignature) != 0) {
+        exif.insert(exif.begin(), kExifSignature,
+                    kExifSignature + sizeof kExifSignature);
+      }
       JXL_RETURN_IF_ERROR(EncodeBase16("exif", exif, strings));
     }
     if (!blobs.iptc.empty()) {
       JXL_RETURN_IF_ERROR(EncodeBase16("iptc", blobs.iptc, strings));
     }
     if (!blobs.xmp.empty()) {
+      // TODO: Store XMP data in an "XML:com.adobe.xmp" text chunk instead.
       JXL_RETURN_IF_ERROR(EncodeBase16("xmp", blobs.xmp, strings));
     }
     return true;
@@ -233,21 +249,7 @@ Status APNGEncoder::EncodePackedPixelFileToAPNG(
       } else {
         memcpy(&out[0], in, out_size);
       }
-    } else if (format.data_type == JXL_TYPE_FLOAT) {
-      float mul = 65535.0;
-      const uint8_t* p_in = in;
-      uint8_t* p_out = out.data();
-      for (size_t i = 0; i < num_samples; ++i, p_in += 4, p_out += 2) {
-        uint32_t val = (format.endianness == JXL_BIG_ENDIAN ? LoadBE32(p_in)
-                                                            : LoadLE32(p_in));
-        float fval;
-        memcpy(&fval, &val, 4);
-        StoreBE16(static_cast<uint32_t>(fval * mul + 0.5), p_out);
-      }
-    } else {
-      return JXL_FAILURE("Unsupported pixel data type");
     }
-
     png_structp png_ptr;
     png_infop info_ptr;
 

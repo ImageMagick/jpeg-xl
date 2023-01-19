@@ -93,10 +93,12 @@ Status InitializePassesEncoder(const Image3F& opsin, const JxlCmsInterface& cms,
     // and kModular for the smallest DC (first in the bitstream)
     if (cparams.progressive_dc == 0) {
       cparams.modular_mode = true;
-      // TODO(jon): tweak mapping from image dist to dist for modular DC
+      cparams.speed_tier =
+          SpeedTier(std::max(static_cast<int>(SpeedTier::kTortoise),
+                             static_cast<int>(cparams.speed_tier) - 1));
       cparams.butteraugli_distance =
           std::max(kMinButteraugliDistance,
-                   enc_state->cparams.butteraugli_distance * 0.03f);
+                   enc_state->cparams.butteraugli_distance * 0.02f);
     } else {
       cparams.max_error_mode = true;
       for (size_t c = 0; c < 3; c++) {
@@ -179,9 +181,7 @@ Status InitializePassesEncoder(const Image3F& opsin, const JxlCmsInterface& cms,
   } else {
     auto compute_dc_coeffs = [&](int group_index, int /* thread */) {
       modular_frame_encoder->AddVarDCTDC(
-          dc, group_index,
-          enc_state->cparams.butteraugli_distance >= 2.0f &&
-              enc_state->cparams.speed_tier < SpeedTier::kFalcon,
+          dc, group_index, enc_state->cparams.speed_tier < SpeedTier::kFalcon,
           enc_state, /*jpeg_transcode=*/false);
     };
     JXL_RETURN_IF_ERROR(RunOnPool(pool, 0, shared.frame_dim.num_dc_groups,

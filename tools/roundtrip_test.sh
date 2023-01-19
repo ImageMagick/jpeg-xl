@@ -22,14 +22,20 @@ cleanup() {
 }
 trap 'retcode=$?; { set +x; } 2>/dev/null; cleanup' INT TERM EXIT
 
+roundtrip_lossless_pnm_test() {
+  local infn="${JPEGXL_TEST_DATA_PATH}/$1"
+  local jxlfn="$(mktemp -p "$tmpdir")"
+  local outfn="$(mktemp -p "$tmpdir").${infn: -3}"
+
+  "${encoder}" "${infn}" "${jxlfn}" -d 0
+  "${decoder}" "${jxlfn}" "${outfn}"
+  diff "${infn}" "${outfn}"
+}
+
 roundtrip_test() {
   local infn="${JPEGXL_TEST_DATA_PATH}/$1"
   local encargs="$2"
   local maxdist="$3"
-  
-  local encoder="${EMULATOR} ${build_dir}/tools/cjxl"
-  local decoder="${EMULATOR} ${build_dir}/tools/djxl"
-  local comparator="${EMULATOR} ${build_dir}/tools/ssimulacra_main"
   local jxlfn="$(mktemp -p "$tmpdir")"
 
   "${encoder}" "${infn}" "${jxlfn}" $encargs
@@ -66,6 +72,28 @@ roundtrip_test() {
       local dist="$("${comparator}" "${infn}" "${outfn}")"
       python3 -c "import sys; sys.exit(not ${dist} <= ${maxdist})"
 
+      # Test decoding to 16 bit png.
+      "${decoder}" "${jxlfn}" "${outfn}" --bits_per_sample 16
+      local dist="$("${comparator}" "${infn}" "${outfn}")"
+      python3 -c "import sys; sys.exit(not ${dist} <= ${maxdist} + 0.0005)"
+
+      # Test decoding to pfm.
+      local outfn="$(mktemp -p "$tmpdir").pfm"
+      "${decoder}" "${jxlfn}" "${outfn}"
+      local dist="$("${comparator}" "${infn}" "${outfn}")"
+      python3 -c "import sys; sys.exit(not ${dist} <= ${maxdist})"
+
+      # Test decoding to ppm.
+      local outfn="$(mktemp -p "$tmpdir").ppm"
+      "${decoder}" "${jxlfn}" "${outfn}"
+      local dist="$("${comparator}" "${infn}" "${outfn}")"
+      python3 -c "import sys; sys.exit(not ${dist} <= ${maxdist})"
+
+      # Test decoding to 16 bit ppm.
+      "${decoder}" "${jxlfn}" "${outfn}" --bits_per_sample 16
+      local dist="$("${comparator}" "${infn}" "${outfn}")"
+      python3 -c "import sys; sys.exit(not ${dist} <= ${maxdist} + 0.0005)"
+
       # Test decoding to jpg.
       outfn="$(mktemp -p "$tmpdir").jpg"
       "${decoder}" "${jxlfn}" "${outfn}" --num_reps 2
@@ -83,9 +111,28 @@ main() {
     build_dir=$(realpath "${MYDIR}/../../build")
   fi
 
+  if [ -n "${EMULATOR}" ]; then
+      local encoder="${EMULATOR} ${build_dir}/tools/cjxl"
+      local decoder="${EMULATOR} ${build_dir}/tools/djxl"
+      local comparator="${EMULATOR} ${build_dir}/tools/ssimulacra_main"
+  else
+      local encoder="${build_dir}/tools/cjxl"
+      local decoder="${build_dir}/tools/djxl"
+      local comparator="${build_dir}/tools/ssimulacra_main"
+  fi
+
   roundtrip_test "jxl/flower/flower.png" "-e 1" 0.02
   roundtrip_test "jxl/flower/flower.png" "-e 1 -d 0.0" 0.0
   roundtrip_test "jxl/flower/flower_cropped.jpg" "-e 1" 0.0
+
+  roundtrip_lossless_pnm_test "jxl/flower/flower_small.rgb.depth1.ppm"
+  roundtrip_lossless_pnm_test "jxl/flower/flower_small.g.depth1.pgm"
+  for i in `seq 2 16`; do
+      roundtrip_lossless_pnm_test "jxl/flower/flower_small.rgb.depth$i.ppm"
+      roundtrip_lossless_pnm_test "jxl/flower/flower_small.g.depth$i.pgm"
+      roundtrip_lossless_pnm_test "jxl/flower/flower_small.ga.depth$i.pam"
+      roundtrip_lossless_pnm_test "jxl/flower/flower_small.rgba.depth$i.pam"
+  done
 }
 
 main "$@"

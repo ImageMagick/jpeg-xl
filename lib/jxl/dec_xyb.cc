@@ -239,7 +239,13 @@ Status OutputEncodingInfo::SetFromMetadata(const CodecMetadata& metadata) {
 
 Status OutputEncodingInfo::MaybeSetColorEncoding(
     const ColorEncoding& c_desired) {
-  if (!xyb_encoded || !CanOutputToColorEncoding(c_desired)) {
+  if (c_desired.GetColorSpace() == ColorSpace::kXYB &&
+      ((color_encoding.GetColorSpace() == ColorSpace::kRGB &&
+        color_encoding.primaries != Primaries::kSRGB) ||
+       color_encoding.tf.IsPQ())) {
+    return false;
+  }
+  if (!xyb_encoded && !CanOutputToColorEncoding(c_desired)) {
     return false;
   }
   return SetColorEncoding(c_desired);

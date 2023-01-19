@@ -27,8 +27,11 @@ class TemporaryFile final {
   std::string temp_filename_;
 };
 
+std::string GetBaseName(std::string filename);
+
 Status RunCommand(const std::string& command,
-                  const std::vector<std::string>& arguments);
+                  const std::vector<std::string>& arguments,
+                  bool quiet = false);
 
 }  // namespace jxl
 

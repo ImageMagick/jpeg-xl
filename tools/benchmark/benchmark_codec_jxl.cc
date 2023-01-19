@@ -48,6 +48,7 @@ size_t OutputToBytes(void* data, const uint8_t* buf, size_t count) {
 }
 
 struct JxlArgs {
+  double hf_asymmetry;
   double xmul;
   double quant_bias;
 
@@ -67,6 +68,11 @@ struct JxlArgs {
 static JxlArgs* const jxlargs = new JxlArgs;
 
 Status AddCommandLineOptionsJxlCodec(BenchmarkArgs* args) {
+  args->AddDouble(&jxlargs->hf_asymmetry, "hf_asymmetry",
+                  "Multiplier for weighting HF artefacts more than features "
+                  "being smoothed out. 1.0 means no HF asymmetry. 0.3 is "
+                  "a good value to start exploring for asymmetry.",
+                  1.0);
   args->AddDouble(&jxlargs->xmul, "xmul",
                   "Multiplier for the difference in X channel in Butteraugli.",
                   1.0);
@@ -101,6 +107,47 @@ Status AddCommandLineOptionsJxlCodec(BenchmarkArgs* args) {
 
 Status ValidateArgsJxlCodec(BenchmarkArgs* args) { return true; }
 
+inline bool ParseSpeedTier(const std::string& s, SpeedTier* out) {
+  if (s == "lightning") {
+    *out = SpeedTier::kLightning;
+    return true;
+  } else if (s == "thunder") {
+    *out = SpeedTier::kThunder;
+    return true;
+  } else if (s == "falcon") {
+    *out = SpeedTier::kFalcon;
+    return true;
+  } else if (s == "cheetah") {
+    *out = SpeedTier::kCheetah;
+    return true;
+  } else if (s == "hare") {
+    *out = SpeedTier::kHare;
+    return true;
+  } else if (s == "fast" || s == "wombat") {
+    *out = SpeedTier::kWombat;
+    return true;
+  } else if (s == "squirrel") {
+    *out = SpeedTier::kSquirrel;
+    return true;
+  } else if (s == "kitten") {
+    *out = SpeedTier::kKitten;
+    return true;
+  } else if (s == "guetzli" || s == "tortoise") {
+    *out = SpeedTier::kTortoise;
+    return true;
+  } else if (s == "glacier") {
+    *out = SpeedTier::kGlacier;
+    return true;
+  }
+  size_t st = 10 - static_cast<size_t>(strtoull(s.c_str(), nullptr, 0));
+  if (st <= static_cast<size_t>(SpeedTier::kLightning) &&
+      st >= static_cast<size_t>(SpeedTier::kTortoise)) {
+    *out = SpeedTier(st);
+    return true;
+  }
+  return false;
+}
+
 class JxlCodec : public ImageCodec {
  public:
   explicit JxlCodec(const BenchmarkArgs& args) : ImageCodec(args) {}
@@ -131,7 +178,6 @@ class JxlCodec : public ImageCodec {
         return JXL_FAILURE("failed to parse uniform quant parameter %s",
                            param.c_str());
       }
-      ba_params_.hf_asymmetry = args_.ba_params.hf_asymmetry;
     } else if (param.substr(0, kMaxPassesPrefix.size()) == kMaxPassesPrefix) {
       std::istringstream parser(param.substr(kMaxPassesPrefix.size()));
       parser >> dparams_.max_passes;
@@ -248,7 +294,7 @@ class JxlCodec : public ImageCodec {
     cparams_.noise = jxlargs->noise;
 
     cparams_.quant_border_bias = static_cast<float>(jxlargs->quant_bias);
-    cparams_.ba_params.hf_asymmetry = ba_params_.hf_asymmetry;
+    cparams_.ba_params.hf_asymmetry = static_cast<float>(jxlargs->hf_asymmetry);
     cparams_.ba_params.xmul = static_cast<float>(jxlargs->xmul);
 
     if (cparams_.butteraugli_distance > 0.f &&

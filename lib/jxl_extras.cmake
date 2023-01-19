@@ -20,6 +20,8 @@ set(JPEGXL_EXTRAS_SOURCES
   extras/dec/pnm.h
   extras/enc/encode.cc
   extras/enc/encode.h
+  extras/enc/jxl.cc
+  extras/enc/jxl.h
   extras/enc/npy.cc
   extras/enc/npy.h
   extras/enc/pgx.cc
@@ -56,6 +58,8 @@ set(JPEGXL_EXTRAS_CODEC_SOURCES
   extras/dec/pnm.h
   extras/enc/encode.cc
   extras/enc/encode.h
+  extras/enc/jxl.cc
+  extras/enc/jxl.h
   extras/enc/npy.cc
   extras/enc/npy.h
   extras/enc/pgx.cc
@@ -122,13 +126,17 @@ if(JPEG_FOUND)
   list(APPEND JXL_EXTRAS_CODEC_INTERNAL_LIBRARIES ${JPEG_LIBRARIES})
   list(APPEND JXL_EXTRAS_CODEC_PUBLIC_DEFINITIONS -DJPEGXL_ENABLE_JPEG=1)
   target_sources(jxl_extras-static PRIVATE
+    extras/dec/jpegli.cc
+    extras/dec/jpegli.h
     extras/dec/jpg.cc
     extras/dec/jpg.h
+    extras/enc/jpegli.cc
+    extras/enc/jpegli.h
     extras/enc/jpg.cc
     extras/enc/jpg.h
   )
   target_include_directories(jxl_extras-static PRIVATE "${JPEG_INCLUDE_DIRS}")
-  target_link_libraries(jxl_extras-static PRIVATE ${JPEG_LIBRARIES})
+  target_link_libraries(jxl_extras-static PRIVATE ${JPEG_LIBRARIES} jpegli-static)
   target_compile_definitions(jxl_extras-static PUBLIC -DJPEGXL_ENABLE_JPEG=1)
   if(JPEGXL_DEP_LICENSE_DIR)
     configure_file("${JPEGXL_DEP_LICENSE_DIR}/libjpeg-dev/copyright"

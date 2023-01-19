@@ -42,6 +42,8 @@
 namespace jxl {
 
 namespace {
+constexpr bool kPrintTree = false;
+
 // Squeeze default quantization factors
 // these quantization factors are for -Q 50  (other qualities simply scale the
 // factors; things are rounded down and obviously cannot get below 1)
@@ -682,7 +684,7 @@ Status ModularFrameEncoder::ComputeEncodingData(
     for (size_t i = 0; i < nb_channels; i++) {
       int32_t min, max;
       compute_minmax(gi.channel[gi.nb_meta_channels + i], &min, &max);
-      int64_t colors = max - min + 1;
+      int64_t colors = (int64_t)max - min + 1;
       JXL_DEBUG_V(10, "Channel %" PRIuS ": range=%i..%i", i, min, max);
       Transform maybe_palette_1(TransformId::kPalette);
       maybe_palette_1.begin_c = i + gi.nb_meta_channels;
@@ -1090,7 +1092,7 @@ Status ModularFrameEncoder::PrepareEncoding(const FrameHeader& frame_header,
   JXL_ASSERT(tree_.size() == decoded_tree.size());
   tree_ = std::move(decoded_tree);
 
-  if (WantDebugOutput(aux_out)) {
+  if (kPrintTree && WantDebugOutput(aux_out)) {
     if (frame_header.dc_level > 0) {
       PrintTree(tree_, aux_out->debug_prefix + "/dc_frame_level" +
                            std::to_string(frame_header.dc_level) + "_tree");
@@ -1369,7 +1371,7 @@ Status ModularFrameEncoder::PrepareStreamParams(const Rect& rect,
       for (size_t i = 0; i < nb_channels; i++) {
         int32_t min, max;
         compute_minmax(gi.channel[gi.nb_meta_channels + i], &min, &max);
-        int colors = max - min + 1;
+        int64_t colors = (int64_t)max - min + 1;
         JXL_DEBUG_V(10, "Channel %" PRIuS ": range=%i..%i", i, min, max);
         Transform maybe_palette_1(TransformId::kPalette);
         maybe_palette_1.begin_c = i + gi.nb_meta_channels;
@@ -1415,6 +1417,7 @@ Status ModularFrameEncoder::PrepareStreamParams(const Rect& rect,
       case SpeedTier::kKitten:
         nb_rcts_to_try = 9;
         break;
+      case SpeedTier::kGlacier:
       case SpeedTier::kTortoise:
         nb_rcts_to_try = 19;
         break;
