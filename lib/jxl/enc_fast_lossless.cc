@@ -9,7 +9,6 @@
 
 #include <assert.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 
 #include <algorithm>
@@ -30,6 +29,19 @@
 #elif (defined(__x86_64__) || defined(_M_X64)) && !defined(_MSC_VER)
 #include <immintrin.h>
 
+// manually add _mm512_cvtsi512_si32 definition if missing
+// (e.g. with Xcode on macOS Mojave)
+// copied from gcc 11.1.0 include/avx512fintrin.h line 14367-14373
+#if defined(__clang__) &&                                           \
+    ((!defined(__apple_build_version__) && __clang_major__ < 10) || \
+     (defined(__apple_build_version__) && __apple_build_version__ < 12000032))
+inline int __attribute__((__gnu_inline__, __always_inline__, __artificial__))
+_mm512_cvtsi512_si32(__m512i __A) {
+  __v16si __B = (__v16si)__A;
+  return __B[0];
+}
+#endif
+
 // TODO(veluca): MSVC support for dynamic dispatch.
 #if defined(__clang__) || defined(__GNUC__)
 
@@ -39,7 +51,10 @@
 
 #ifndef FJXL_ENABLE_AVX512
 // On clang-7 or earlier, and gcc-10 or earlier, AVX512 seems broken.
-#if (defined(__clang__) && __clang_major__ > 7) || \
+#if (defined(__clang__) &&                                             \
+         (!defined(__apple_build_version__) && __clang_major__ > 7) || \
+     (defined(__apple_build_version__) &&                              \
+      __apple_build_version__ > 10010046)) ||                          \
     (defined(__GNUC__) && __GNUC__ > 10)
 #define FJXL_ENABLE_AVX512 1
 #endif
@@ -209,6 +224,7 @@ void JxlFastLosslessPrepareHeader(JxlFastLosslessFrameState* frame,
 
   bool have_alpha = (frame->nb_chans == 2 || frame->nb_chans == 4);
 
+#if FJXL_STANDALONE
   if (add_image_header) {
     // Signature
     output->Write(16, 0x0AFF);
@@ -266,7 +282,7 @@ void JxlFastLosslessPrepareHeader(JxlFastLosslessFrameState* frame,
       output->Write(2, 0b00);  // No extra channel
     }
     output->Write(1, 0);  // Not XYB
-    if (frame->nb_chans > 1) {
+    if (frame->nb_chans > 2) {
       output->Write(1, 1);  // color_encoding.all_default (sRGB)
     } else {
       output->Write(1, 0);     // color_encoding.all_default false
@@ -285,6 +301,9 @@ void JxlFastLosslessPrepareHeader(JxlFastLosslessFrameState* frame,
     // No ICC, no preview. Frame should start at byte boundery.
     output->ZeroPadToByte();
   }
+#else
+  assert(!add_image_header);
+#endif
 
   // Handcrafted frame header.
   output->Write(1, 0);     // all_default
@@ -2478,10 +2497,10 @@ struct UpTo8Bits {
     GenericEncodeChunk(residuals, n, skip, code, output);
   }
 
-  size_t NumSymbols(bool doing_ycocg) const {
+  size_t NumSymbols(bool doing_ycocg_or_large_palette) const {
     // values gain 1 bit for YCoCg, 1 bit for prediction.
     // Maximum symbol is 1 + effective bit depth of residuals.
-    if (doing_ycocg) {
+    if (doing_ycocg_or_large_palette) {
       return bitdepth + 3;
     } else {
       return bitdepth + 2;
@@ -2541,10 +2560,10 @@ struct From9To13Bits {
     GenericEncodeChunk(residuals, n, skip, code, output);
   }
 
-  size_t NumSymbols(bool doing_ycocg) const {
+  size_t NumSymbols(bool doing_ycocg_or_large_palette) const {
     // values gain 1 bit for YCoCg, 1 bit for prediction.
     // Maximum symbol is 1 + effective bit depth of residuals.
-    if (doing_ycocg) {
+    if (doing_ycocg_or_large_palette) {
       return bitdepth + 3;
     } else {
       return bitdepth + 2;
@@ -3174,9 +3193,9 @@ void ProcessImageArea(const unsigned char* rgba, size_t x0, size_t y0,
   for (size_t y = 0; y < ys; y++) {
     const auto rgba_row =
         rgba + row_stride * (y0 + y) + x0 * nb_chans * BitDepth::kInputBytes;
-    pixel_t* crow[4];
-    pixel_t* prow[4];
-    for (size_t i = 0; i < 4; i++) {
+    pixel_t* crow[4] = {};
+    pixel_t* prow[4] = {};
+    for (size_t i = 0; i < nb_chans; i++) {
       crow[i] = align(&group_data[i][y & 1][kPadding]);
       prow[i] = align(&group_data[i][(y - 1) & 1][kPadding]);
     }
@@ -3355,7 +3374,7 @@ void WriteACSectionPalette(const unsigned char* rgba, size_t x0, size_t y0,
 
   row_encoder.t = &encoder;
   encoder.output = &output;
-  encoder.code = &code[1];
+  encoder.code = &code[is_single_group ? 1 : 0];
   ProcessImageAreaPalette<
       ChannelRowProcessor<ChunkEncoder<UpTo8Bits>, UpTo8Bits>>(
       rgba, x0, y0, xs, 0, ys, row_stride, lookup, nb_chans, &row_encoder);
@@ -3365,17 +3384,17 @@ template <typename BitDepth>
 void CollectSamples(const unsigned char* rgba, size_t x0, size_t y0, size_t xs,
                     size_t row_stride, size_t row_count,
                     uint64_t raw_counts[4][kNumRawSymbols],
-                    uint64_t lz77_counts[4][kNumLZ77], bool palette,
-                    BitDepth bitdepth, size_t nb_chans, bool big_endian,
-                    const int16_t* lookup) {
+                    uint64_t lz77_counts[4][kNumLZ77], bool is_single_group,
+                    bool palette, BitDepth bitdepth, size_t nb_chans,
+                    bool big_endian, const int16_t* lookup) {
   if (palette) {
     ChunkSampleCollector<UpTo8Bits> sample_collectors[4];
     ChannelRowProcessor<ChunkSampleCollector<UpTo8Bits>, UpTo8Bits>
         row_sample_collectors[4];
     for (size_t c = 0; c < nb_chans; c++) {
       row_sample_collectors[c].t = &sample_collectors[c];
-      sample_collectors[c].raw_counts = raw_counts[1];
-      sample_collectors[c].lz77_counts = lz77_counts[1];
+      sample_collectors[c].raw_counts = raw_counts[is_single_group ? 1 : 0];
+      sample_collectors[c].lz77_counts = lz77_counts[is_single_group ? 1 : 0];
     }
     ProcessImageAreaPalette<
         ChannelRowProcessor<ChunkSampleCollector<UpTo8Bits>, UpTo8Bits>>(
@@ -3398,14 +3417,23 @@ void CollectSamples(const unsigned char* rgba, size_t x0, size_t y0, size_t xs,
 }
 
 void PrepareDCGlobalPalette(bool is_single_group, size_t width, size_t height,
-                            const PrefixCode code[4],
+                            size_t nb_chans, const PrefixCode code[4],
                             const std::vector<uint32_t>& palette,
                             size_t pcolors, BitWriter* output) {
   PrepareDCGlobalCommon(is_single_group, width, height, code, output);
   output->Write(2, 0b01);     // 1 transform
   output->Write(2, 0b01);     // Palette
   output->Write(5, 0b00000);  // Starting from ch 0
-  output->Write(2, 0b10);     // 4-channel palette (RGBA)
+  if (nb_chans == 1) {
+    output->Write(2, 0b00);  // 1-channel palette (Gray)
+  } else if (nb_chans == 3) {
+    output->Write(2, 0b01);  // 3-channel palette (RGB)
+  } else if (nb_chans == 4) {
+    output->Write(2, 0b10);  // 4-channel palette (RGBA)
+  } else {
+    output->Write(2, 0b11);
+    output->Write(13, nb_chans - 1);
+  }
   // pcolors <= kMaxColors + kChunkSize - 1
   static_assert(kMaxColors + kChunkSize < 1281,
                 "add code to signal larger palette sizes");
@@ -3441,18 +3469,50 @@ void PrepareDCGlobalPalette(bool is_single_group, size_t width, size_t height,
   row_encoder.ProcessRow(p[0] + 16, p[0] + 15, p[0] + 15, p[0] + 15, pcolors);
   p[1][15] = p[0][16];
   p[0][15] = p[0][16];
-  row_encoder.ProcessRow(p[1] + 16, p[1] + 15, p[0] + 16, p[0] + 15, pcolors);
+  if (nb_chans > 1) {
+    row_encoder.ProcessRow(p[1] + 16, p[1] + 15, p[0] + 16, p[0] + 15, pcolors);
+  }
   p[2][15] = p[1][16];
   p[1][15] = p[1][16];
-  row_encoder.ProcessRow(p[2] + 16, p[2] + 15, p[1] + 16, p[1] + 15, pcolors);
+  if (nb_chans > 2) {
+    row_encoder.ProcessRow(p[2] + 16, p[2] + 15, p[1] + 16, p[1] + 15, pcolors);
+  }
   p[3][15] = p[2][16];
   p[2][15] = p[2][16];
-  row_encoder.ProcessRow(p[3] + 16, p[3] + 15, p[2] + 16, p[2] + 15, pcolors);
+  if (nb_chans > 3) {
+    row_encoder.ProcessRow(p[3] + 16, p[3] + 15, p[2] + 16, p[2] + 15, pcolors);
+  }
   row_encoder.Finalize();
 
   if (!is_single_group) {
     output->ZeroPadToByte();
   }
+}
+
+template <size_t nb_chans>
+bool detect_palette(const unsigned char* r, size_t width,
+                    std::vector<uint32_t>& palette) {
+  size_t x = 0;
+  bool collided = false;
+  // this is just an unrolling of the next loop
+  for (; x + 7 < width; x += 8) {
+    uint32_t p[8] = {}, index[8];
+    for (int i = 0; i < 8; i++) memcpy(&p[i], r + (x + i) * nb_chans, 4);
+    for (int i = 0; i < 8; i++) p[i] &= ((1llu << (8 * nb_chans)) - 1);
+    for (int i = 0; i < 8; i++) index[i] = pixel_hash(p[i]);
+    for (int i = 0; i < 8; i++) {
+      collided |= (palette[index[i]] != 0 && p[i] != palette[index[i]]);
+    }
+    for (int i = 0; i < 8; i++) palette[index[i]] = p[i];
+  }
+  for (; x < width; x++) {
+    uint32_t p = 0;
+    memcpy(&p, r + x * nb_chans, nb_chans);
+    uint32_t index = pixel_hash(p);
+    collided |= (palette[index] != 0 && p != palette[index]);
+    palette[index] = p;
+  }
+  return collided;
 }
 
 template <typename BitDepth>
@@ -3468,57 +3528,21 @@ JxlFastLosslessFrameState* LLEnc(const unsigned char* rgba, size_t width,
 
   // Count colors to try palette
   std::vector<uint32_t> palette(kHashSize);
-  palette[0] = 1;
   std::vector<int16_t> lookup(kHashSize);
   lookup[0] = 0;
   int pcolors = 0;
-  bool collided = effort < 2 || bitdepth.bitdepth != 8 ||
-                  nb_chans < 4;  // todo: also do rgb palette
+  bool collided = effort < 2 || bitdepth.bitdepth != 8;
   for (size_t y = 0; y < height && !collided; y++) {
     const unsigned char* r = rgba + stride * y;
-    size_t x = 0;
-    if (nb_chans == 4) {
-      // this is just an unrolling of the next loop
-      for (; x + 7 < width; x += 8) {
-        uint32_t p[8], index[8];
-        memcpy(p, r + x * 4, 32);
-        for (int i = 0; i < 8; i++) index[i] = pixel_hash(p[i]);
-        for (int i = 0; i < 8; i++) {
-          uint32_t init_entry = index[i] ? 0 : 1;
-          if (init_entry != palette[index[i]] && p[i] != palette[index[i]]) {
-            collided = true;
-          }
-        }
-        for (int i = 0; i < 8; i++) palette[index[i]] = p[i];
-      }
-      for (; x < width; x++) {
-        uint32_t p;
-        memcpy(&p, r + x * 4, 4);
-        uint32_t index = pixel_hash(p);
-        uint32_t init_entry = index ? 0 : 1;
-        if (init_entry != palette[index] && p != palette[index]) {
-          collided = true;
-        }
-        palette[index] = p;
-      }
-    } else {
-      for (; x < width; x++) {
-        uint32_t p = 0;
-        memcpy(&p, r + x * nb_chans, nb_chans);
-        uint32_t index = pixel_hash(p);
-        uint32_t init_entry = index ? 0 : 1;
-        if (init_entry != palette[index] && p != palette[index]) {
-          collided = true;
-        }
-        palette[index] = p;
-      }
-    }
+    if (nb_chans == 1) collided = detect_palette<1>(r, width, palette);
+    if (nb_chans == 2) collided = detect_palette<2>(r, width, palette);
+    if (nb_chans == 3) collided = detect_palette<3>(r, width, palette);
+    if (nb_chans == 4) collided = detect_palette<4>(r, width, palette);
   }
 
   int nb_entries = 0;
   if (!collided) {
-    if (palette[0] == 0) pcolors = 1;
-    if (palette[0] == 1) palette[0] = 0;
+    pcolors = 1;  // always have all-zero as a palette color
     bool have_color = false;
     uint8_t minG = 255, maxG = 0;
     for (uint32_t k = 0; k < kHashSize; k++) {
@@ -3545,15 +3569,20 @@ JxlFastLosslessFrameState* LLEnc(const unsigned char* rgba, size_t width,
   if (!collided) {
     std::sort(
         palette.begin(), palette.begin() + nb_entries,
-        [](uint32_t ap, uint32_t bp) {
+        [&nb_chans](uint32_t ap, uint32_t bp) {
           if (ap == 0) return false;
           if (bp == 0) return true;
           uint8_t a[4], b[4];
           memcpy(a, &ap, 4);
           memcpy(b, &bp, 4);
           float ay, by;
-          ay = (0.299f * a[0] + 0.587f * a[1] + 0.114f * a[2] + 0.01f) * a[3];
-          by = (0.299f * b[0] + 0.587f * b[1] + 0.114f * b[2] + 0.01f) * b[3];
+          if (nb_chans == 4) {
+            ay = (0.299f * a[0] + 0.587f * a[1] + 0.114f * a[2] + 0.01f) * a[3];
+            by = (0.299f * b[0] + 0.587f * b[1] + 0.114f * b[2] + 0.01f) * b[3];
+          } else {
+            ay = (0.299f * a[0] + 0.587f * a[1] + 0.114f * a[2] + 0.01f);
+            by = (0.299f * b[0] + 0.587f * b[1] + 0.114f * b[2] + 0.01f);
+          }
           return ay < by;  // sort on alpha*luma
         });
     for (int k = 0; k < nb_entries; k++) {
@@ -3570,6 +3599,8 @@ JxlFastLosslessFrameState* LLEnc(const unsigned char* rgba, size_t width,
   uint64_t raw_counts[4][kNumRawSymbols] = {};
   uint64_t lz77_counts[4][kNumLZ77] = {};
 
+  bool onegroup = num_groups_x == 1 && num_groups_y == 1;
+
   // sample the middle (effort * 2) rows of every group
   for (size_t g = 0; g < num_groups_y * num_groups_x; g++) {
     size_t xg = g % num_groups_x;
@@ -3582,8 +3613,8 @@ JxlFastLosslessFrameState* LLEnc(const unsigned char* rgba, size_t width,
     int x_max =
         std::min<size_t>(width - xg * 256, 256) / kChunkSize * kChunkSize;
     CollectSamples(rgba, xg * 256, y_begin, x_max, stride, y_count, raw_counts,
-                   lz77_counts, !collided, bitdepth, nb_chans, big_endian,
-                   lookup.data());
+                   lz77_counts, onegroup, !collided, bitdepth, nb_chans,
+                   big_endian, lookup.data());
   }
 
   // TODO(veluca): can probably improve this and make it bitdepth-dependent.
@@ -3592,7 +3623,9 @@ JxlFastLosslessFrameState* LLEnc(const unsigned char* rgba, size_t width,
       5,    1,   1,    1,    1,    1,   1,   1,   1};
 
   bool doing_ycocg = nb_chans > 2 && collided;
-  for (size_t i = bitdepth.NumSymbols(doing_ycocg); i < kNumRawSymbols; i++) {
+  bool large_palette = !collided || pcolors >= 256;
+  for (size_t i = bitdepth.NumSymbols(doing_ycocg || large_palette);
+       i < kNumRawSymbols; i++) {
     base_raw_counts[i] = 0;
   }
 
@@ -3629,8 +3662,6 @@ JxlFastLosslessFrameState* LLEnc(const unsigned char* rgba, size_t width,
     hcode[i] = PrefixCode(bitdepth, raw_counts[i], lz77_counts[i]);
   }
 
-  bool onegroup = num_groups_x == 1 && num_groups_y == 1;
-
   size_t num_groups = onegroup ? 1
                                : (2 + num_dc_groups_x * num_dc_groups_y +
                                   num_groups_x * num_groups_y);
@@ -3647,8 +3678,8 @@ JxlFastLosslessFrameState* LLEnc(const unsigned char* rgba, size_t width,
     PrepareDCGlobal(onegroup, width, height, nb_chans, hcode,
                     &frame_state->group_data[0][0]);
   } else {
-    PrepareDCGlobalPalette(onegroup, width, height, hcode, palette, pcolors,
-                           &frame_state->group_data[0][0]);
+    PrepareDCGlobalPalette(onegroup, width, height, nb_chans, hcode, palette,
+                           pcolors, &frame_state->group_data[0][0]);
   }
 
   auto run_one = [&](size_t g) {
@@ -3780,6 +3811,7 @@ namespace AVX512 {
 
 extern "C" {
 
+#if FJXL_STANDALONE
 size_t JxlFastLosslessEncode(const unsigned char* rgba, size_t width,
                              size_t row_stride, size_t height, size_t nb_chans,
                              size_t bitdepth, int big_endian, int effort,
@@ -3800,6 +3832,7 @@ size_t JxlFastLosslessEncode(const unsigned char* rgba, size_t width,
   }
   return total;
 }
+#endif
 
 JxlFastLosslessFrameState* JxlFastLosslessPrepareFrame(
     const unsigned char* rgba, size_t width, size_t row_stride, size_t height,

@@ -9,8 +9,8 @@
 // Basic parsing of Exif (just enough for the render-impacting things
 // like orientation)
 
-#include "jxl/codestream_header.h"
-#include "lib/jxl/base/padded_bytes.h"
+#include <jxl/codestream_header.h>
+
 #include "lib/jxl/image_metadata.h"
 
 namespace jxl {
@@ -55,9 +55,9 @@ inline size_t FindExifTagPosition(const std::vector<uint8_t>& exif,
   return 0;
 }
 
-// TODO (jon): tag 1 can be used to represent Adobe RGB 1998 if it has value
+// TODO(jon): tag 1 can be used to represent Adobe RGB 1998 if it has value
 // "R03"
-// TODO (jon): set intrinsic dimensions according to
+// TODO(jon): set intrinsic dimensions according to
 // https://discourse.wicg.io/t/proposal-exif-image-resolution-auto-and-from-image/4326/24
 // Parses the Exif data just enough to extract any render-impacting info.
 // If the Exif data is invalid or could not be parsed, then it is treated

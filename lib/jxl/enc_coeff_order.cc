@@ -6,13 +6,10 @@
 #include <stdint.h>
 
 #include <algorithm>
+#include <hwy/aligned_allocator.h>
 #include <vector>
 
 #include "lib/jxl/ans_params.h"
-#include "lib/jxl/aux_out.h"
-#include "lib/jxl/aux_out_fwd.h"
-#include "lib/jxl/base/padded_bytes.h"
-#include "lib/jxl/base/profiler.h"
 #include "lib/jxl/base/span.h"
 #include "lib/jxl/coeff_order.h"
 #include "lib/jxl/coeff_order_fwd.h"
@@ -26,6 +23,8 @@
 #include "lib/jxl/modular/modular_image.h"
 
 namespace jxl {
+
+struct AuxOut;
 
 std::pair<uint32_t, uint32_t> ComputeUsedOrders(
     const SpeedTier speed, const AcStrategyImage& ac_strategy,

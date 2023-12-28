@@ -10,7 +10,7 @@
 #include <hwy/foreach_target.h>
 #include <hwy/highway.h>
 
-#include "lib/jxl/common.h"  // RoundUpTo
+#include "lib/jxl/base/common.h"
 #include "lib/jxl/convolve-inl.h"
 
 HWY_BEFORE_NAMESPACE();
@@ -149,8 +149,6 @@ static JXL_NOINLINE void Symmetric5BorderRow(const ImageF& in, const Rect& rect,
 void Symmetric5(const ImageF& in, const Rect& rect,
                 const WeightsSymmetric5& weights, ThreadPool* pool,
                 ImageF* JXL_RESTRICT out) {
-  PROFILER_FUNC;
-
   const size_t ysize = rect.ysize();
   JXL_CHECK(RunOnPool(
       pool, 0, static_cast<uint32_t>(ysize), ThreadPool::NoInit,

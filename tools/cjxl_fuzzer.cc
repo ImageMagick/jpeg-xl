@@ -3,22 +3,21 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+#include <jxl/encode.h>
+#include <jxl/encode_cxx.h>
+#include <jxl/thread_parallel_runner.h>
+#include <jxl/thread_parallel_runner_cxx.h>
 #include <limits.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <algorithm>
 #include <functional>
+#include <hwy/targets.h>
 #include <random>
 #include <vector>
 
-#include "hwy/targets.h"
-#include "jxl/encode.h"
-#include "jxl/encode_cxx.h"
-#include "jxl/thread_parallel_runner.h"
-#include "jxl/thread_parallel_runner_cxx.h"
 #include "lib/jxl/base/status.h"
 #include "lib/jxl/test_image.h"
 

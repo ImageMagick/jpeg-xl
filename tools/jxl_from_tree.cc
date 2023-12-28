@@ -3,6 +3,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+#include <jxl/cms.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -11,10 +12,9 @@
 #include <istream>
 #include <unordered_map>
 
-#include "lib/jxl/base/file_io.h"
+#include "lib/jxl/codec_in_out.h"
 #include "lib/jxl/enc_cache.h"
-#include "lib/jxl/enc_color_management.h"
-#include "lib/jxl/enc_file.h"
+#include "lib/jxl/enc_fields.h"
 #include "lib/jxl/enc_frame.h"
 #include "lib/jxl/enc_heuristics.h"
 #include "lib/jxl/modular/encoding/context_predict.h"
@@ -22,8 +22,33 @@
 #include "lib/jxl/modular/encoding/enc_ma.h"
 #include "lib/jxl/modular/encoding/encoding.h"
 #include "lib/jxl/splines.h"
+#include "lib/jxl/test_utils.h"  // TODO(eustas): cut this dependency
+#include "tools/file_io.h"
 
-namespace jxl {
+namespace jpegxl {
+namespace tools {
+
+using ::jxl::BitWriter;
+using ::jxl::BlendMode;
+using ::jxl::CodecInOut;
+using ::jxl::CodecMetadata;
+using ::jxl::ColorCorrelationMap;
+using ::jxl::ColorEncoding;
+using ::jxl::ColorTransform;
+using ::jxl::CompressParams;
+using ::jxl::DefaultEncoderHeuristics;
+using ::jxl::FrameDimensions;
+using ::jxl::FrameInfo;
+using ::jxl::Image3F;
+using ::jxl::ImageF;
+using ::jxl::PaddedBytes;
+using ::jxl::PassesEncoderState;
+using ::jxl::Predictor;
+using ::jxl::PropertyDecisionNode;
+using ::jxl::QuantizedSpline;
+using ::jxl::Spline;
+using ::jxl::Splines;
+using ::jxl::Tree;
 
 namespace {
 struct SplineData {
@@ -393,7 +418,7 @@ bool ParseNode(F& tok, Tree& tree, SplineData& spline_data,
 
 class Heuristics : public DefaultEncoderHeuristics {
  public:
-  bool CustomFixedTreeLossless(const jxl::FrameDimensions& frame_dim,
+  bool CustomFixedTreeLossless(const FrameDimensions& frame_dim,
                                Tree* tree) override {
     *tree = tree_;
     return true;
@@ -445,7 +470,7 @@ int JxlFromTree(const char* in, const char* out, const char* tree_out) {
   io.SetFromImage(std::move(image), ColorEncoding::SRGB());
   io.SetSize((width + x0) * cparams.resampling,
              (height + y0) * cparams.resampling);
-  io.metadata.m.color_encoding.DecideIfWantICC();
+  io.metadata.m.color_encoding.DecideIfWantICC(*JxlGetDefaultCms());
   cparams.options.zero_tokens = true;
   cparams.palette_colors = 0;
   cparams.channel_colors_pre_transform_percent = 0;
@@ -461,9 +486,9 @@ int JxlFromTree(const char* in, const char* out, const char* tree_out) {
   *metadata = io.metadata;
   JXL_RETURN_IF_ERROR(metadata->size.Set(io.xsize(), io.ysize()));
 
-  metadata->m.xyb_encoded = cparams.color_transform == ColorTransform::kXYB;
+  metadata->m.xyb_encoded = (cparams.color_transform == ColorTransform::kXYB);
 
-  JXL_RETURN_IF_ERROR(WriteHeaders(metadata.get(), &writer, nullptr));
+  JXL_RETURN_IF_ERROR(WriteCodestreamHeaders(metadata.get(), &writer, nullptr));
   writer.ZeroPadToByte();
 
   while (true) {
@@ -480,9 +505,9 @@ int JxlFromTree(const char* in, const char* out, const char* tree_out) {
     io.frames[0].origin.y0 = y0;
     info.clamp = false;
 
-    JXL_RETURN_IF_ERROR(EncodeFrame(cparams, info, metadata.get(), io.frames[0],
-                                    &enc_state, GetJxlCms(), nullptr, &writer,
-                                    nullptr));
+    JXL_RETURN_IF_ERROR(jxl::EncodeFrame(
+        cparams, info, metadata.get(), io.frames[0], &enc_state,
+        *JxlGetDefaultCms(), nullptr, &writer, nullptr));
     if (!have_next) break;
     tree.clear();
     spline_data.splines.clear();
@@ -499,16 +524,15 @@ int JxlFromTree(const char* in, const char* out, const char* tree_out) {
 
   compressed = std::move(writer).TakeBytes();
 
-  if (!strcmp(out, "-")) {
-    fwrite(compressed.data(), 1, compressed.size(), stdout);
-  } else if (!WriteFile(compressed, out)) {
+  if (!WriteFile(out, compressed)) {
     fprintf(stderr, "Failed to write to \"%s\"\n", out);
     return 1;
   }
 
   return 0;
 }
-}  // namespace jxl
+}  // namespace tools
+}  // namespace jpegxl
 
 int main(int argc, char** argv) {
   if ((argc != 3 && argc != 4) ||
@@ -516,5 +540,6 @@ int main(int argc, char** argv) {
     fprintf(stderr, "Usage: %s tree_in.txt out.jxl [tree_drawing]\n", argv[0]);
     return 1;
   }
-  return jxl::JxlFromTree(argv[1], argv[2], argc < 4 ? nullptr : argv[3]);
+  return jpegxl::tools::JxlFromTree(argv[1], argv[2],
+                                    argc < 4 ? nullptr : argv[3]);
 }

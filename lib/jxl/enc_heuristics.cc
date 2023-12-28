@@ -17,6 +17,7 @@
 #include "lib/jxl/enc_ar_control_field.h"
 #include "lib/jxl/enc_cache.h"
 #include "lib/jxl/enc_chroma_from_luma.h"
+#include "lib/jxl/enc_gaborish.h"
 #include "lib/jxl/enc_modular.h"
 #include "lib/jxl/enc_noise.h"
 #include "lib/jxl/enc_patch_dictionary.h"
@@ -24,9 +25,11 @@
 #include "lib/jxl/enc_quant_weights.h"
 #include "lib/jxl/enc_splines.h"
 #include "lib/jxl/enc_xyb.h"
-#include "lib/jxl/gaborish.h"
 
 namespace jxl {
+
+struct AuxOut;
+
 namespace {
 void FindBestBlockEntropyModel(PassesEncoderState& enc_state) {
   if (enc_state.cparams.decoding_speed_tier >= 1) {
@@ -302,7 +305,8 @@ void DownsampleImage2_Sharper(const ImageF& input, ImageF* output) {
   int64_t xsize = input.xsize();
   int64_t ysize = input.ysize();
 
-  ImageF box_downsample = CopyImage(input);
+  ImageF box_downsample(xsize, ysize);
+  CopyImageTo(input, &box_downsample);
   DownsampleImage(&box_downsample, 2);
 
   ImageF mask(box_downsample.xsize(), box_downsample.ysize());
@@ -613,7 +617,8 @@ void DownsampleImage2_Iterative(const ImageF& orig, ImageF* output) {
   int64_t xsize2 = DivCeil(orig.xsize(), 2);
   int64_t ysize2 = DivCeil(orig.ysize(), 2);
 
-  ImageF box_downsample = CopyImage(orig);
+  ImageF box_downsample(xsize, ysize);
+  CopyImageTo(orig, &box_downsample);
   DownsampleImage(&box_downsample, 2);
   ImageF mask(box_downsample.xsize(), box_downsample.ysize());
   CreateMask(box_downsample, mask);
@@ -627,7 +632,8 @@ void DownsampleImage2_Iterative(const ImageF& orig, ImageF* output) {
   initial.ShrinkTo(initial.xsize() - kBlockDim, initial.ysize() - kBlockDim);
   DownsampleImage2_Sharper(orig, &initial);
 
-  ImageF down = CopyImage(initial);
+  ImageF down(initial.xsize(), initial.ysize());
+  CopyImageTo(initial, &down);
   ImageF up(xsize, ysize);
   ImageF corr(xsize, ysize);
   ImageF corr2(xsize2, ysize2);
@@ -680,7 +686,7 @@ void DownsampleImage2_Iterative(Image3F* opsin) {
                        downsampled.ysize() - kBlockDim);
 
   Image3F rgb(opsin->xsize(), opsin->ysize());
-  OpsinParams opsin_params;  // TODO: use the ones that are actually used
+  OpsinParams opsin_params;  // TODO(user): use the ones that are actually used
   opsin_params.Init(kDefaultIntensityTarget);
   OpsinToLinear(*opsin, Rect(rgb), nullptr, &rgb, opsin_params);
 
@@ -701,14 +707,11 @@ Status DefaultEncoderHeuristics::LossyFrameHeuristics(
     PassesEncoderState* enc_state, ModularFrameEncoder* modular_frame_encoder,
     const ImageBundle* original_pixels, Image3F* opsin,
     const JxlCmsInterface& cms, ThreadPool* pool, AuxOut* aux_out) {
-  PROFILER_ZONE("JxlLossyFrameHeuristics uninstrumented");
-
   CompressParams& cparams = enc_state->cparams;
   PassesSharedState& shared = enc_state->shared;
 
   // Compute parameters for noise synthesis.
   if (shared.frame_header.flags & FrameHeader::kNoise) {
-    PROFILER_ZONE("enc GetNoiseParam");
     if (cparams.photon_noise_iso == 0) {
       // Don't start at zero amplitude since adding noise is expensive -- it
       // significantly slows down decoding, and this is unlikely to
@@ -825,14 +828,12 @@ Status DefaultEncoderHeuristics::LossyFrameHeuristics(
   // Call InitialQuantField only in Hare mode or slower. Otherwise, rely
   // on simple heuristics in FindBestAcStrategy, or set a constant for Falcon
   // mode.
-  if (cparams.speed_tier > SpeedTier::kHare || cparams.uniform_quant > 0) {
+  if (cparams.speed_tier > SpeedTier::kHare) {
     enc_state->initial_quant_field =
         ImageF(shared.frame_dim.xsize_blocks, shared.frame_dim.ysize_blocks);
     enc_state->initial_quant_masking =
         ImageF(shared.frame_dim.xsize_blocks, shared.frame_dim.ysize_blocks);
-    float q = cparams.uniform_quant > 0
-                  ? cparams.uniform_quant
-                  : kAcQuant / cparams.butteraugli_distance;
+    float q = kAcQuant / cparams.butteraugli_distance;
     FillImage(q, &enc_state->initial_quant_field);
     FillImage(1.0f / (q + 0.001f), &enc_state->initial_quant_masking);
   } else {
@@ -843,7 +844,8 @@ Status DefaultEncoderHeuristics::LossyFrameHeuristics(
     }
     enc_state->initial_quant_field = InitialQuantField(
         butteraugli_distance_for_iqf, *opsin, shared.frame_dim, pool, 1.0f,
-        &enc_state->initial_quant_masking);
+        &enc_state->initial_quant_masking,
+        &enc_state->initial_quant_masking1x1);
     quantizer.SetQuantField(quant_dc, enc_state->initial_quant_field, nullptr);
   }
 
@@ -851,7 +853,13 @@ Status DefaultEncoderHeuristics::LossyFrameHeuristics(
 
   // Apply inverse-gaborish.
   if (shared.frame_header.loop_filter.gab) {
-    GaborishInverse(opsin, 0.9908511000000001f, pool);
+    // Unsure why better to do some more gaborish on X and B than Y.
+    float weight[3] = {
+        1.0036278514398933f,
+        0.99406123118127299f,
+        0.99719338015886894f,
+    };
+    GaborishInverse(opsin, weight, pool);
   }
 
   FindBestDequantMatrices(cparams, *opsin, modular_frame_encoder,
@@ -878,6 +886,7 @@ Status DefaultEncoderHeuristics::LossyFrameHeuristics(
     if (cparams.speed_tier <= SpeedTier::kSquirrel) {
       cfl_heuristics.ComputeTile(r, *opsin, enc_state->shared.matrices,
                                  /*ac_strategy=*/nullptr,
+                                 /*raw_quant_field=*/nullptr,
                                  /*quantizer=*/nullptr, /*fast=*/false, thread,
                                  &enc_state->shared.cmap);
     }
@@ -894,6 +903,7 @@ Status DefaultEncoderHeuristics::LossyFrameHeuristics(
     // adjusting the quant field with butteraugli when all the other encoding
     // parameters are fixed is likely a more reliable choice anyway.
     AdjustQuantField(enc_state->shared.ac_strategy, r,
+                     cparams.butteraugli_distance,
                      &enc_state->initial_quant_field);
     quantizer.SetQuantFieldRect(enc_state->initial_quant_field, r,
                                 &enc_state->shared.raw_quant_field);
@@ -902,7 +912,7 @@ Status DefaultEncoderHeuristics::LossyFrameHeuristics(
     if (cparams.speed_tier <= SpeedTier::kHare) {
       cfl_heuristics.ComputeTile(
           r, *opsin, enc_state->shared.matrices, &enc_state->shared.ac_strategy,
-          &enc_state->shared.quantizer,
+          &enc_state->shared.raw_quant_field, &enc_state->shared.quantizer,
           /*fast=*/cparams.speed_tier >= SpeedTier::kWombat, thread,
           &enc_state->shared.cmap);
     }

@@ -6,17 +6,17 @@
 #ifndef LIB_JXL_DEC_CACHE_H_
 #define LIB_JXL_DEC_CACHE_H_
 
+#include <jxl/decode.h>
 #include <stdint.h>
 
 #include <atomic>
 #include <hwy/base.h>  // HWY_ALIGN_MAX
 
-#include "jxl/decode.h"
 #include "lib/jxl/ac_strategy.h"
-#include "lib/jxl/base/profiler.h"
+#include "lib/jxl/base/common.h"  // kMaxNumPasses
 #include "lib/jxl/coeff_order.h"
-#include "lib/jxl/common.h"
 #include "lib/jxl/convolve.h"
+#include "lib/jxl/dec_ans.h"
 #include "lib/jxl/dec_group_border.h"
 #include "lib/jxl/dec_noise.h"
 #include "lib/jxl/image.h"
@@ -128,6 +128,7 @@ struct PassesDecoderState {
     bool use_slow_render_pipeline;
     bool coalescing;
     bool render_spotcolors;
+    bool render_noise;
   };
 
   Status PreparePipeline(ImageBundle* decoded, PipelineOptions options);
@@ -188,8 +189,6 @@ struct PassesDecoderState {
 // for large images because we only initialize min(#threads, #groups) instances.
 struct GroupDecCache {
   void InitOnce(size_t num_passes, size_t used_acs) {
-    PROFILER_FUNC;
-
     for (size_t i = 0; i < num_passes; i++) {
       if (num_nzeroes[i].xsize() == 0) {
         // Allocate enough for a whole group - partial groups on the
@@ -213,7 +212,7 @@ struct GroupDecCache {
       max_block_area_ = max_block_area;
       // We need 3x float blocks for dequantized coefficients and 1x for scratch
       // space for transforms.
-      float_memory_ = hwy::AllocateAligned<float>(max_block_area_ * 4);
+      float_memory_ = hwy::AllocateAligned<float>(max_block_area_ * 7);
       // We need 3x int32 or int16 blocks for quantized coefficients.
       int32_memory_ = hwy::AllocateAligned<int32_t>(max_block_area_ * 3);
       int16_memory_ = hwy::AllocateAligned<int16_t>(max_block_area_ * 3);

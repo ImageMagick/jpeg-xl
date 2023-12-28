@@ -7,15 +7,16 @@
 
 #include <sstream>
 
-#include "lib/jxl/aux_out.h"
 #include "lib/jxl/base/printf_macros.h"
 #include "lib/jxl/base/status.h"
+#include "lib/jxl/common.h"  // kMaxNumPasses
 #include "lib/jxl/fields.h"
+#include "lib/jxl/pack_signed.h"
 
 namespace jxl {
 
-constexpr uint8_t YCbCrChromaSubsampling::kHShift[];
-constexpr uint8_t YCbCrChromaSubsampling::kVShift[];
+constexpr uint8_t YCbCrChromaSubsampling::kHShift[] = {0, 1, 1, 0};
+constexpr uint8_t YCbCrChromaSubsampling::kVShift[] = {0, 1, 0, 1};
 
 static Status VisitBlendMode(Visitor* JXL_RESTRICT visitor,
                              BlendMode default_value, BlendMode* blend_mode) {
@@ -79,6 +80,7 @@ Status BlendingInfo::VisitFields(Visitor* JXL_RESTRICT visitor) {
   return true;
 }
 
+#if JXL_DEBUG_V_LEVEL >= 1
 std::string BlendingInfo::DebugString() const {
   std::ostringstream os;
   os << (mode == BlendMode::kReplace            ? "Replace"
@@ -97,6 +99,7 @@ std::string BlendingInfo::DebugString() const {
   }
   return os.str();
 }
+#endif
 
 AnimationFrame::AnimationFrame(const CodecMetadata* metadata)
     : nonserialized_metadata(metadata) {
@@ -161,6 +164,7 @@ Status Passes::VisitFields(Visitor* JXL_RESTRICT visitor) {
   return true;
 }
 
+#if JXL_DEBUG_V_LEVEL >= 1
 std::string Passes::DebugString() const {
   std::ostringstream os;
   os << "p=" << num_passes;
@@ -184,6 +188,7 @@ std::string Passes::DebugString() const {
   }
   return os.str();
 }
+#endif
 
 FrameHeader::FrameHeader(const CodecMetadata* metadata)
     : animation_frame(metadata), nonserialized_metadata(metadata) {
@@ -193,11 +198,6 @@ FrameHeader::FrameHeader(const CodecMetadata* metadata)
 Status ReadFrameHeader(BitReader* JXL_RESTRICT reader,
                        FrameHeader* JXL_RESTRICT frame) {
   return Bundle::Read(reader, frame);
-}
-
-Status WriteFrameHeader(const FrameHeader& frame,
-                        BitWriter* JXL_RESTRICT writer, AuxOut* aux_out) {
-  return Bundle::Write(frame, writer, kLayerHeader, aux_out);
 }
 
 Status FrameHeader::VisitFields(Visitor* JXL_RESTRICT visitor) {
@@ -425,6 +425,7 @@ Status FrameHeader::VisitFields(Visitor* JXL_RESTRICT visitor) {
   return visitor->EndExtensions();
 }
 
+#if JXL_DEBUG_V_LEVEL >= 1
 std::string FrameHeader::DebugString() const {
   std::ostringstream os;
   os << (encoding == FrameEncoding::kVarDCT ? "VarDCT" : "Modular");
@@ -496,5 +497,6 @@ std::string FrameHeader::DebugString() const {
   if (is_last) os << ",last";
   return os.str();
 }
+#endif
 
 }  // namespace jxl

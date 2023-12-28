@@ -16,11 +16,10 @@
 #include <hwy/foreach_target.h>
 #include <hwy/highway.h>
 
+#include "lib/jxl/base/common.h"
 #include "lib/jxl/base/compiler_specific.h"
-#include "lib/jxl/base/profiler.h"
-#include "lib/jxl/common.h"
+#include "lib/jxl/base/matrix_ops.h"
 #include "lib/jxl/image_ops.h"
-#include "lib/jxl/linalg.h"
 HWY_BEFORE_NAMESPACE();
 namespace jxl {
 namespace HWY_NAMESPACE {
@@ -217,7 +216,8 @@ struct OutputStore {
   void operator()(const V& out, float* JXL_RESTRICT pos,
                   ptrdiff_t offset) const {
     // Stream helps for large images but is slower for images that fit in cache.
-    Store(out, HWY_FULL(float)(), pos + offset);
+    const HWY_FULL(float) df;
+    Store(out, df, pos + offset);
   }
 };
 
@@ -227,7 +227,8 @@ class SingleInput {
  public:
   explicit SingleInput(const float* pos) : pos_(pos) {}
   Vec<HWY_FULL(float)> operator()(const size_t offset) const {
-    return Load(HWY_FULL(float)(), pos_ + offset);
+    const HWY_FULL(float) df;
+    return Load(df, pos_ + offset);
   }
   const float* pos_;
 };
@@ -238,8 +239,9 @@ class TwoInputs {
  public:
   TwoInputs(const float* pos1, const float* pos2) : pos1_(pos1), pos2_(pos2) {}
   Vec<HWY_FULL(float)> operator()(const size_t offset) const {
-    const auto in1 = Load(HWY_FULL(float)(), pos1_ + offset);
-    const auto in2 = Load(HWY_FULL(float)(), pos2_ + offset);
+    const HWY_FULL(float) df;
+    const auto in1 = Load(df, pos1_ + offset);
+    const auto in2 = Load(df, pos2_ + offset);
     return Add(in1, in2);
   }
 
@@ -377,11 +379,11 @@ void VerticalStrip(const hwy::AlignedUniquePtr<RecursiveGaussian>& rg,
 void FastGaussianVertical(const hwy::AlignedUniquePtr<RecursiveGaussian>& rg,
                           const ImageF& in, ThreadPool* /*pool*/,
                           ImageF* JXL_RESTRICT out) {
-  PROFILER_FUNC;
   JXL_CHECK(SameSize(in, *out));
 
+  const HWY_FULL(float) df;
   constexpr size_t kCacheLineLanes = 64 / sizeof(float);
-  constexpr size_t kVN = MaxLanes(HWY_FULL(float)());
+  constexpr size_t kVN = MaxLanes(df);
   constexpr size_t kCacheLineVectors =
       (kVN < kCacheLineLanes) ? (kCacheLineLanes / kVN) : 4;
   constexpr size_t kFastPace = kCacheLineVectors * kVN;
@@ -497,7 +499,6 @@ ImageF ConvolveAndSample(const ImageF& in, const std::vector<float>& kernel,
 // Implements "Recursive Implementation of the Gaussian Filter Using Truncated
 // Cosine Functions" by Charalampidis [2016].
 hwy::AlignedUniquePtr<RecursiveGaussian> CreateRecursiveGaussian(double sigma) {
-  PROFILER_FUNC;
   auto rg = hwy::MakeUniqueAligned<RecursiveGaussian>();
   constexpr double kPi = 3.141592653589793238;
 
@@ -542,7 +543,7 @@ hwy::AlignedUniquePtr<RecursiveGaussian> CreateRecursiveGaussian(double sigma) {
   const double gamma[3] = {1, radius * radius - sigma * sigma,  // (55)
                            zeta_15 * rho[0] + zeta_35 * rho[1] + rho[2]};
   double beta[3];
-  MatMul(A, gamma, 3, 3, 1, beta);  // (53)
+  Mul3x3Vector(A, gamma, beta);  // (53)
 
   // Sanity check: correctly solved for beta (IIR filter weights are normalized)
   const double sum = beta[0] * p_1 + beta[1] * p_3 + beta[2] * p_5;  // (39)
@@ -595,7 +596,6 @@ namespace {
 void FastGaussianHorizontal(const hwy::AlignedUniquePtr<RecursiveGaussian>& rg,
                             const ImageF& in, ThreadPool* pool,
                             ImageF* JXL_RESTRICT out) {
-  PROFILER_FUNC;
   JXL_CHECK(SameSize(in, *out));
 
   const intptr_t xsize = in.xsize();

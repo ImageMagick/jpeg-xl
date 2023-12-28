@@ -5,6 +5,7 @@
 
 #include "lib/jxl/dec_frame.h"
 
+#include <jxl/types.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -15,21 +16,19 @@
 #include <utility>
 #include <vector>
 
-#include "jxl/types.h"
 #include "lib/jxl/ac_context.h"
 #include "lib/jxl/ac_strategy.h"
 #include "lib/jxl/ans_params.h"
 #include "lib/jxl/base/bits.h"
+#include "lib/jxl/base/common.h"
 #include "lib/jxl/base/compiler_specific.h"
 #include "lib/jxl/base/data_parallel.h"
 #include "lib/jxl/base/printf_macros.h"
-#include "lib/jxl/base/profiler.h"
 #include "lib/jxl/base/status.h"
 #include "lib/jxl/chroma_from_luma.h"
 #include "lib/jxl/coeff_order.h"
 #include "lib/jxl/coeff_order_fwd.h"
-#include "lib/jxl/color_management.h"
-#include "lib/jxl/common.h"
+#include "lib/jxl/common.h"  // kMaxNumPasses
 #include "lib/jxl/compressed_dc.h"
 #include "lib/jxl/dec_ans.h"
 #include "lib/jxl/dec_bit_reader.h"
@@ -40,13 +39,13 @@
 #include "lib/jxl/dec_xyb.h"
 #include "lib/jxl/epf.h"
 #include "lib/jxl/fields.h"
+#include "lib/jxl/frame_dimensions.h"
 #include "lib/jxl/frame_header.h"
 #include "lib/jxl/image.h"
 #include "lib/jxl/image_bundle.h"
 #include "lib/jxl/image_ops.h"
 #include "lib/jxl/jpeg/jpeg_data.h"
 #include "lib/jxl/loop_filter.h"
-#include "lib/jxl/luminance.h"
 #include "lib/jxl/passes_state.h"
 #include "lib/jxl/quant_weights.h"
 #include "lib/jxl/quantizer.h"
@@ -59,7 +58,6 @@ namespace jxl {
 namespace {
 Status DecodeGlobalDCInfo(BitReader* reader, bool is_jpeg,
                           PassesDecoderState* state, ThreadPool* pool) {
-  PROFILER_FUNC;
   JXL_RETURN_IF_ERROR(state->shared_storage.quantizer.Decode(reader));
 
   JXL_RETURN_IF_ERROR(
@@ -84,10 +82,11 @@ Status DecodeFrame(PassesDecoderState* dec_state, ThreadPool* JXL_RESTRICT pool,
   FrameDecoder frame_decoder(dec_state, metadata, pool,
                              use_slow_rendering_pipeline);
 
-  BitReader reader(Span<const uint8_t>(next_in, avail_in));
+  BitReader reader(Bytes(next_in, avail_in));
   JXL_RETURN_IF_ERROR(frame_decoder.InitFrame(&reader, decoded,
-                                              /*is_preview=*/false,
-                                              /*output_needed=*/true));
+                                              /*is_preview=*/false));
+  JXL_RETURN_IF_ERROR(frame_decoder.InitFrameOutput());
+
   JXL_RETURN_IF_ERROR(reader.AllReadsWithinBounds());
   size_t header_bytes = reader.TotalBitsConsumed() / kBitsPerByte;
   JXL_RETURN_IF_ERROR(reader.Close());
@@ -100,12 +99,12 @@ Status DecodeFrame(PassesDecoderState* dec_state, ThreadPool* JXL_RESTRICT pool,
     std::vector<FrameDecoder::SectionInfo> section_info;
     std::vector<FrameDecoder::SectionStatus> section_status;
     size_t pos = header_bytes;
+    size_t index = 0;
     for (auto toc_entry : frame_decoder.Toc()) {
       JXL_RETURN_IF_ERROR(pos + toc_entry.size <= avail_in);
-      auto br = make_unique<BitReader>(
-          Span<const uint8_t>(next_in + pos, toc_entry.size));
+      auto br = make_unique<BitReader>(Bytes(next_in + pos, toc_entry.size));
       section_info.emplace_back(
-          FrameDecoder::SectionInfo{br.get(), toc_entry.id});
+          FrameDecoder::SectionInfo{br.get(), toc_entry.id, index++});
       section_closers.emplace_back(
           make_unique<BitReaderScopedCloser>(br.get(), &close_ok));
       section_readers.emplace_back(std::move(br));
@@ -126,8 +125,7 @@ Status DecodeFrame(PassesDecoderState* dec_state, ThreadPool* JXL_RESTRICT pool,
 }
 
 Status FrameDecoder::InitFrame(BitReader* JXL_RESTRICT br, ImageBundle* decoded,
-                               bool is_preview, bool output_needed) {
-  PROFILER_FUNC;
+                               bool is_preview) {
   decoded_ = decoded;
   JXL_ASSERT(is_finalized_);
 
@@ -196,18 +194,20 @@ Status FrameDecoder::InitFrame(BitReader* JXL_RESTRICT br, ImageBundle* decoded,
         "Non-444 chroma subsampling is not allowed when adaptive DC "
         "smoothing is enabled");
   }
+  return true;
+}
 
-  if (!output_needed) return true;
+Status FrameDecoder::InitFrameOutput() {
   JXL_RETURN_IF_ERROR(
       InitializePassesSharedState(frame_header_, &dec_state_->shared_storage));
   JXL_RETURN_IF_ERROR(dec_state_->Init());
   modular_frame_decoder_.Init(frame_dim_);
 
-  if (decoded->IsJPEG()) {
+  if (decoded_->IsJPEG()) {
     if (frame_header_.encoding == FrameEncoding::kModular) {
       return JXL_FAILURE("Cannot output JPEG from Modular");
     }
-    jpeg::JPEGData* jpeg_data = decoded->jpeg_data.get();
+    jpeg::JPEGData* jpeg_data = decoded_->jpeg_data.get();
     size_t num_components = jpeg_data->components.size();
     if (num_components != 1 && num_components != 3) {
       return JXL_FAILURE("Invalid number of components");
@@ -216,8 +216,8 @@ Status FrameDecoder::InitFrame(BitReader* JXL_RESTRICT br, ImageBundle* decoded,
       return JXL_FAILURE("Cannot decode to JPEG an XYB image");
     }
     auto jpeg_c_map = JpegOrder(ColorTransform::kYCbCr, num_components == 1);
-    decoded->jpeg_data->width = frame_dim_.xsize;
-    decoded->jpeg_data->height = frame_dim_.ysize;
+    decoded_->jpeg_data->width = frame_dim_.xsize;
+    decoded_->jpeg_data->height = frame_dim_.ysize;
     for (size_t c = 0; c < num_components; c++) {
       auto& component = jpeg_data->components[jpeg_c_map[c]];
       component.width_in_blocks =
@@ -250,7 +250,6 @@ Status FrameDecoder::InitFrame(BitReader* JXL_RESTRICT br, ImageBundle* decoded,
 }
 
 Status FrameDecoder::ProcessDCGlobal(BitReader* br) {
-  PROFILER_FUNC;
   PassesSharedState& shared = dec_state_->shared_storage;
   if (shared.frame_header.flags & FrameHeader::kPatches) {
     bool uses_extra_channels = false;
@@ -299,7 +298,6 @@ Status FrameDecoder::ProcessDCGlobal(BitReader* br) {
 }
 
 Status FrameDecoder::ProcessDCGroup(size_t dc_group_id, BitReader* br) {
-  PROFILER_FUNC;
   const size_t gx = dc_group_id % frame_dim_.xsize_dc_groups;
   const size_t gy = dc_group_id / frame_dim_.xsize_dc_groups;
   const LoopFilter& lf = dec_state_->shared->frame_header.loop_filter;
@@ -449,7 +447,6 @@ Status FrameDecoder::ProcessACGroup(size_t ac_group_id,
                                     BitReader* JXL_RESTRICT* br,
                                     size_t num_passes, size_t thread,
                                     bool force_draw, bool dc_only) {
-  PROFILER_ZONE("process_group");
   size_t group_dim = frame_dim_.group_dim;
   const size_t gx = ac_group_id % frame_dim_.xsize_groups;
   const size_t gy = ac_group_id / frame_dim_.xsize_groups;
@@ -504,7 +501,6 @@ Status FrameDecoder::ProcessACGroup(size_t ac_group_id,
   decoded_passes_per_ac_group_[ac_group_id] += num_passes;
 
   if ((frame_header_.flags & FrameHeader::kNoise) != 0) {
-    PROFILER_ZONE("GenerateNoise");
     size_t noise_c_start =
         3 + frame_header_.nonserialized_metadata->m.num_extra_channels;
     // When the color channels are downsampled, we need to generate more noise
@@ -649,6 +645,7 @@ Status FrameDecoder::ProcessSections(const SectionInfo* sections, size_t num,
     pipeline_options.use_slow_render_pipeline = use_slow_rendering_pipeline_;
     pipeline_options.coalescing = coalescing_;
     pipeline_options.render_spotcolors = render_spotcolors_;
+    pipeline_options.render_noise = true;
     JXL_RETURN_IF_ERROR(
         dec_state_->PreparePipeline(decoded_, pipeline_options));
     FinalizeDC();
@@ -866,9 +863,8 @@ Status FrameDecoder::FinalizeFrame() {
   if (frame_header_.CanBeReferenced()) {
     auto& info = dec_state_->shared_storage
                      .reference_frames[frame_header_.save_as_reference];
-    info.storage = std::move(dec_state_->frame_storage_for_referencing);
+    info.frame = std::move(dec_state_->frame_storage_for_referencing);
     info.ib_is_in_xyb = frame_header_.save_before_color_transform;
-    info.frame = &info.storage;
   }
   return true;
 }

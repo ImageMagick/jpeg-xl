@@ -21,13 +21,12 @@
 
 #include "lib/jxl/ac_context.h"
 #include "lib/jxl/ac_strategy.h"
-#include "lib/jxl/aux_out.h"
 #include "lib/jxl/base/bits.h"
+#include "lib/jxl/base/common.h"
 #include "lib/jxl/base/printf_macros.h"
-#include "lib/jxl/base/profiler.h"
 #include "lib/jxl/base/status.h"
 #include "lib/jxl/coeff_order.h"
-#include "lib/jxl/common.h"
+#include "lib/jxl/common.h"  // kMaxNumPasses
 #include "lib/jxl/convolve.h"
 #include "lib/jxl/dct_scales.h"
 #include "lib/jxl/dec_cache.h"
@@ -35,7 +34,6 @@
 #include "lib/jxl/dec_xyb.h"
 #include "lib/jxl/entropy_coder.h"
 #include "lib/jxl/epf.h"
-#include "lib/jxl/opsin_params.h"
 #include "lib/jxl/quant_weights.h"
 #include "lib/jxl/quantizer-inl.h"
 #include "lib/jxl/quantizer.h"
@@ -43,6 +41,8 @@
 #ifndef LIB_JXL_DEC_GROUP_CC
 #define LIB_JXL_DEC_GROUP_CC
 namespace jxl {
+
+struct AuxOut;
 
 // Interface for reading groups for DecodeGroupImpl.
 class GetBlock {
@@ -139,9 +139,8 @@ void DequantBlock(const AcStrategy& acs, float inv_global_scale, int quant,
                   const size_t* sbx,
                   const float* JXL_RESTRICT* JXL_RESTRICT dc_row,
                   size_t dc_stride, const float* JXL_RESTRICT biases,
-                  ACPtr qblock[3], float* JXL_RESTRICT block) {
-  PROFILER_FUNC;
-
+                  ACPtr qblock[3], float* JXL_RESTRICT block,
+                  float* JXL_RESTRICT scratch) {
   const auto scaled_dequant_s = inv_global_scale / quant;
 
   const auto scaled_dequant_x = Set(d, scaled_dequant_s * x_dm_multiplier);
@@ -157,7 +156,7 @@ void DequantBlock(const AcStrategy& acs, float inv_global_scale, int quant,
   }
   for (size_t c = 0; c < 3; c++) {
     LowestFrequenciesFromDC(acs.Strategy(), dc_row[c] + sbx[c], dc_stride,
-                            block + c * size);
+                            block + c * size, scratch);
   }
 }
 
@@ -168,7 +167,6 @@ Status DecodeGroupImpl(GetBlock* JXL_RESTRICT get_block,
                        RenderPipelineInput& render_pipeline_input,
                        ImageBundle* decoded, DrawMode draw) {
   // TODO(veluca): investigate cache usage in this function.
-  PROFILER_FUNC;
   const Rect block_rect = dec_state->shared->BlockGroupRect(group_idx);
   const AcStrategyImage& ac_strategy = dec_state->shared->ac_strategy;
 
@@ -304,7 +302,6 @@ Status DecodeGroupImpl(GetBlock* JXL_RESTRICT get_block,
           bx += llf_x;
           continue;
         }
-        PROFILER_ZONE("DecodeGroupImpl inner");
         const size_t log2_covered_blocks = acs.log2_covered_blocks();
 
         const size_t covered_blocks = 1 << log2_covered_blocks;
@@ -406,7 +403,7 @@ Status DecodeGroupImpl(GetBlock* JXL_RESTRICT get_block,
               acs.covered_blocks_y() * acs.covered_blocks_x(), sbx, dc_rows,
               dc_stride,
               dec_state->output_encoding_info.opsin_params.quant_biases, qblock,
-              block);
+              block, group_dec_cache->scratch_space);
 
           for (size_t c : {1, 0, 2}) {
             if ((sbx[c] << hshift[c] != bx) || (sby[c] << vshift[c] != by)) {
@@ -422,9 +419,6 @@ Status DecodeGroupImpl(GetBlock* JXL_RESTRICT get_block,
       }
     }
   }
-  if (draw == kDontDraw) {
-    return true;
-  }
   return true;
 }
 
@@ -438,7 +432,7 @@ namespace jxl {
 namespace {
 // Decode quantized AC coefficients of DCT blocks.
 // LLF components in the output block will not be modified.
-template <ACType ac_type>
+template <ACType ac_type, bool uses_lz77>
 Status DecodeACVarBlock(size_t ctx_offset, size_t log2_covered_blocks,
                         int32_t* JXL_RESTRICT row_nzeros,
                         const int32_t* JXL_RESTRICT row_nzeros_top,
@@ -451,7 +445,6 @@ Status DecodeACVarBlock(size_t ctx_offset, size_t log2_covered_blocks,
                         const uint8_t* qdc_row, const int32_t* qf_row,
                         const BlockCtxMap& block_ctx_map, ACPtr block,
                         size_t shift = 0) {
-  PROFILER_FUNC;
   // Equal to number of LLF coefficients.
   const size_t covered_blocks = 1 << log2_covered_blocks;
   const size_t size = covered_blocks * kDCTBlockSize;
@@ -466,7 +459,8 @@ Status DecodeACVarBlock(size_t ctx_offset, size_t log2_covered_blocks,
   const int32_t nzero_ctx =
       block_ctx_map.NonZeroContext(predicted_nzeros, block_ctx) + ctx_offset;
 
-  size_t nzeros = decoder->ReadHybridUint(nzero_ctx, br, context_map);
+  size_t nzeros =
+      decoder->ReadHybridUintInlined<uses_lz77>(nzero_ctx, br, context_map);
   if (nzeros + covered_blocks > size) {
     return JXL_FAILURE("Invalid AC: nzeros too large");
   }
@@ -480,36 +474,33 @@ Status DecodeACVarBlock(size_t ctx_offset, size_t log2_covered_blocks,
   const size_t histo_offset =
       ctx_offset + block_ctx_map.ZeroDensityContextsOffset(block_ctx);
 
-  // Skip LLF
-  {
-    PROFILER_ZONE("AcDecSkipLLF, reader");
-    size_t prev = (nzeros > size / 16 ? 0 : 1);
-    for (size_t k = covered_blocks; k < size && nzeros != 0; ++k) {
-      const size_t ctx =
-          histo_offset + ZeroDensityContext(nzeros, k, covered_blocks,
-                                            log2_covered_blocks, prev);
-      const size_t u_coeff = decoder->ReadHybridUint(ctx, br, context_map);
-      // Hand-rolled version of UnpackSigned, shifting before the conversion to
-      // signed integer to avoid undefined behavior of shifting negative
-      // numbers.
-      const size_t magnitude = u_coeff >> 1;
-      const size_t neg_sign = (~u_coeff) & 1;
-      const intptr_t coeff =
-          static_cast<intptr_t>((magnitude ^ (neg_sign - 1)) << shift);
-      if (ac_type == ACType::k16) {
-        block.ptr16[order[k]] += coeff;
-      } else {
-        block.ptr32[order[k]] += coeff;
-      }
-      prev = static_cast<size_t>(u_coeff != 0);
-      nzeros -= prev;
+  size_t prev = (nzeros > size / 16 ? 0 : 1);
+  for (size_t k = covered_blocks; k < size && nzeros != 0; ++k) {
+    const size_t ctx =
+        histo_offset + ZeroDensityContext(nzeros, k, covered_blocks,
+                                          log2_covered_blocks, prev);
+    const size_t u_coeff =
+        decoder->ReadHybridUintInlined<uses_lz77>(ctx, br, context_map);
+    // Hand-rolled version of UnpackSigned, shifting before the conversion to
+    // signed integer to avoid undefined behavior of shifting negative numbers.
+    const size_t magnitude = u_coeff >> 1;
+    const size_t neg_sign = (~u_coeff) & 1;
+    const intptr_t coeff =
+        static_cast<intptr_t>((magnitude ^ (neg_sign - 1)) << shift);
+    if (ac_type == ACType::k16) {
+      block.ptr16[order[k]] += coeff;
+    } else {
+      block.ptr32[order[k]] += coeff;
     }
-    if (JXL_UNLIKELY(nzeros != 0)) {
-      return JXL_FAILURE("Invalid AC: nzeros not 0. Block (%" PRIuS ", %" PRIuS
-                         "), channel %" PRIuS,
-                         bx, by, c);
-    }
+    prev = static_cast<size_t>(u_coeff != 0);
+    nzeros -= prev;
   }
+  if (JXL_UNLIKELY(nzeros != 0)) {
+    return JXL_FAILURE("Invalid AC: nzeros not 0. Block (%" PRIuS ", %" PRIuS
+                       "), channel %" PRIuS,
+                       bx, by, c);
+  }
+
   return true;
 }
 
@@ -537,9 +528,7 @@ struct GetBlockFromBitstream : public GetBlock {
   Status LoadBlock(size_t bx, size_t by, const AcStrategy& acs, size_t size,
                    size_t log2_covered_blocks, ACPtr block[3],
                    ACType ac_type) override {
-    auto decode_ac_varblock = ac_type == ACType::k16
-                                  ? DecodeACVarBlock<ACType::k16>
-                                  : DecodeACVarBlock<ACType::k32>;
+    ;
     for (size_t c : {1, 0, 2}) {
       size_t sbx = bx >> hshift[c];
       size_t sby = by >> vshift[c];
@@ -548,6 +537,12 @@ struct GetBlockFromBitstream : public GetBlock {
       }
 
       for (size_t pass = 0; JXL_UNLIKELY(pass < num_passes); pass++) {
+        auto decode_ac_varblock =
+            decoders[pass].UsesLZ77()
+                ? (ac_type == ACType::k16 ? DecodeACVarBlock<ACType::k16, 1>
+                                          : DecodeACVarBlock<ACType::k32, 1>)
+                : (ac_type == ACType::k16 ? DecodeACVarBlock<ACType::k16, 0>
+                                          : DecodeACVarBlock<ACType::k32, 0>);
         JXL_RETURN_IF_ERROR(decode_ac_varblock(
             ctx_offset[pass], log2_covered_blocks, row_nzeros[pass][c],
             row_nzeros_top[pass][c], nzeros_stride, c, sbx, sby, bx, acs,
@@ -675,8 +670,6 @@ Status DecodeGroup(BitReader* JXL_RESTRICT* JXL_RESTRICT readers,
                    RenderPipelineInput& render_pipeline_input,
                    ImageBundle* JXL_RESTRICT decoded, size_t first_pass,
                    bool force_draw, bool dc_only, bool* should_run_pipeline) {
-  PROFILER_FUNC;
-
   DrawMode draw = (num_passes + first_pass ==
                    dec_state->shared->frame_header.passes.num_passes) ||
                           force_draw
@@ -757,18 +750,18 @@ Status DecodeGroup(BitReader* JXL_RESTRICT* JXL_RESTRICT readers,
     histo_selector_bits = CeilLog2Nonzero(dec_state->shared->num_histograms);
   }
 
-  GetBlockFromBitstream get_block;
+  auto get_block = jxl::make_unique<GetBlockFromBitstream>();
   JXL_RETURN_IF_ERROR(
-      get_block.Init(readers, num_passes, group_idx, histo_selector_bits,
-                     dec_state->shared->BlockGroupRect(group_idx),
-                     group_dec_cache, dec_state, first_pass));
+      get_block->Init(readers, num_passes, group_idx, histo_selector_bits,
+                      dec_state->shared->BlockGroupRect(group_idx),
+                      group_dec_cache, dec_state, first_pass));
 
   JXL_RETURN_IF_ERROR(HWY_DYNAMIC_DISPATCH(DecodeGroupImpl)(
-      &get_block, group_dec_cache, dec_state, thread, group_idx,
+      get_block.get(), group_dec_cache, dec_state, thread, group_idx,
       render_pipeline_input, decoded, draw));
 
   for (size_t pass = 0; pass < num_passes; pass++) {
-    if (!get_block.decoders[pass].CheckANSFinalState()) {
+    if (!get_block->decoders[pass].CheckANSFinalState()) {
       return JXL_FAILURE("ANS checksum failure.");
     }
   }
@@ -783,8 +776,6 @@ Status DecodeGroupForRoundtrip(const std::vector<std::unique_ptr<ACImage>>& ac,
                                RenderPipelineInput& render_pipeline_input,
                                ImageBundle* JXL_RESTRICT decoded,
                                AuxOut* aux_out) {
-  PROFILER_FUNC;
-
   GetBlockFromEncoder get_block(ac, group_idx,
                                 dec_state->shared->frame_header.passes.shift);
   group_dec_cache->InitOnce(

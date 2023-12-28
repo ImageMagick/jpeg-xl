@@ -6,18 +6,20 @@
 #ifndef LIB_JPEGLI_QUANT_H_
 #define LIB_JPEGLI_QUANT_H_
 
-#include <vector>
-
-#include "lib/jxl/common.h"
-#include "lib/jxl/image.h"
-#include "lib/jxl/jpeg/jpeg_data.h"
+#include "lib/jpegli/common.h"
 
 namespace jpegli {
 
-void AddJpegQuantMatrices(const jxl::ImageF& qf, bool xyb, float dc_quant,
-                          float global_scale,
-                          std::vector<jxl::jpeg::JPEGQuantTable>* quant_tables,
-                          float* qm);
+void SetQuantMatrices(j_compress_ptr cinfo, float distances[NUM_QUANT_TBLS],
+                      bool add_two_chroma_tables);
+
+enum QuantPass {
+  NO_SEARCH,
+  SEARCH_FIRST_PASS,
+  SEARCH_SECOND_PASS,
+};
+
+void InitQuantizer(j_compress_ptr cinfo, QuantPass pass);
 
 }  // namespace jpegli
 

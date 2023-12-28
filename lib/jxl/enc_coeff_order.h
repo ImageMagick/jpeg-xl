@@ -10,18 +10,18 @@
 #include <stdint.h>
 
 #include "lib/jxl/ac_strategy.h"
-#include "lib/jxl/aux_out_fwd.h"
 #include "lib/jxl/base/compiler_specific.h"
 #include "lib/jxl/base/status.h"
 #include "lib/jxl/coeff_order.h"
 #include "lib/jxl/coeff_order_fwd.h"
-#include "lib/jxl/common.h"
 #include "lib/jxl/dct_util.h"
 #include "lib/jxl/dec_bit_reader.h"
 #include "lib/jxl/enc_bit_writer.h"
 #include "lib/jxl/enc_params.h"
 
 namespace jxl {
+
+struct AuxOut;
 
 // Orders that are actually used in part of image. `rect` is in block units.
 // Returns {orders that are used, orders that might be made non-default}.

@@ -5,7 +5,6 @@
 
 #include "lib/jxl/enc_quant_weights.h"
 
-#include <stdio.h>
 #include <stdlib.h>
 
 #include <algorithm>
@@ -13,12 +12,11 @@
 #include <limits>
 #include <utility>
 
-#include "lib/jxl/aux_out.h"
-#include "lib/jxl/aux_out_fwd.h"
 #include "lib/jxl/base/bits.h"
+#include "lib/jxl/base/common.h"
 #include "lib/jxl/base/status.h"
-#include "lib/jxl/common.h"
 #include "lib/jxl/dct_scales.h"
+#include "lib/jxl/enc_aux_out.h"
 #include "lib/jxl/enc_bit_writer.h"
 #include "lib/jxl/enc_modular.h"
 #include "lib/jxl/fields.h"
@@ -27,6 +25,8 @@
 #include "lib/jxl/modular/options.h"
 
 namespace jxl {
+
+struct AuxOut;
 
 namespace {
 
@@ -138,7 +138,7 @@ Status DequantMatricesEncode(const DequantMatrices* matrices, BitWriter* writer,
           DequantMatrices::required_size_y[i], writer, modular_frame_encoder));
     }
   }
-  ReclaimAndCharge(writer, &allotment, layer, aux_out);
+  allotment.ReclaimAndCharge(writer, layer, aux_out);
   return true;
 }
 
@@ -159,7 +159,7 @@ Status DequantMatricesEncodeDC(const DequantMatrices* matrices,
       JXL_RETURN_IF_ERROR(F16Coder::Write(dc_quant[c] * 128.0f, writer));
     }
   }
-  ReclaimAndCharge(writer, &allotment, layer, aux_out);
+  allotment.ReclaimAndCharge(writer, layer, aux_out);
   return true;
 }
 

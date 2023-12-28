@@ -22,8 +22,7 @@
 #include "lib/jxl/base/status.h"
 #include "lib/jxl/blending.h"
 #include "lib/jxl/chroma_from_luma.h"
-#include "lib/jxl/color_management.h"
-#include "lib/jxl/common.h"
+#include "lib/jxl/common.h"  // kMaxNumReferenceFrames
 #include "lib/jxl/dec_ans.h"
 #include "lib/jxl/dec_frame.h"
 #include "lib/jxl/entropy_coder.h"
@@ -31,6 +30,7 @@
 #include "lib/jxl/image.h"
 #include "lib/jxl/image_bundle.h"
 #include "lib/jxl/image_ops.h"
+#include "lib/jxl/pack_signed.h"
 #include "lib/jxl/patch_dictionary_internal.h"
 
 namespace jxl {
@@ -68,14 +68,14 @@ Status PatchDictionary::Decode(BitReader* br, size_t xsize, size_t ysize,
     PatchReferencePosition ref_pos;
     ref_pos.ref = read_num(kReferenceFrameContext);
     if (ref_pos.ref >= kMaxNumReferenceFrames ||
-        shared_->reference_frames[ref_pos.ref].frame->xsize() == 0) {
+        shared_->reference_frames[ref_pos.ref].frame.xsize() == 0) {
       return JXL_FAILURE("Invalid reference frame ID");
     }
     if (!shared_->reference_frames[ref_pos.ref].ib_is_in_xyb) {
       return JXL_FAILURE(
           "Patches cannot use frames saved post color transforms");
     }
-    const ImageBundle& ib = *shared_->reference_frames[ref_pos.ref].frame;
+    const ImageBundle& ib = shared_->reference_frames[ref_pos.ref].frame;
     ref_pos.x0 = read_num(kPatchReferencePositionContext);
     ref_pos.y0 = read_num(kPatchReferencePositionContext);
     ref_pos.xsize = read_num(kPatchSizeContext) + 1;
@@ -338,13 +338,13 @@ void PatchDictionary::AddOneRow(float* const* inout, size_t y, size_t x0,
     size_t patch_x0 = std::max(bx, x0);
     size_t patch_x1 = std::min(bx + patch_xsize, x0 + xsize);
     for (size_t c = 0; c < 3; c++) {
-      fg_ptrs[c] = shared_->reference_frames[ref].frame->color()->ConstPlaneRow(
+      fg_ptrs[c] = shared_->reference_frames[ref].frame.color().ConstPlaneRow(
                        c, ref_pos.y0 + iy) +
                    ref_pos.x0 + x0 - bx;
     }
     for (size_t i = 0; i < num_ec; i++) {
       fg_ptrs[3 + i] =
-          shared_->reference_frames[ref].frame->extra_channels()[i].ConstRow(
+          shared_->reference_frames[ref].frame.extra_channels()[i].ConstRow(
               ref_pos.y0 + iy) +
           ref_pos.x0 + x0 - bx;
     }
