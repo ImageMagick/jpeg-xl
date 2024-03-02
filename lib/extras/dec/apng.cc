@@ -71,9 +71,7 @@ const png_byte kIgnoredPngChunks[] = {
 };
 
 // Returns floating-point value from the PNG encoding (times 10^5).
-static double F64FromU32(const uint32_t x) {
-  return static_cast<int32_t>(x) * 1E-5;
-}
+double F64FromU32(const uint32_t x) { return static_cast<int32_t>(x) * 1E-5; }
 
 Status DecodeSRGB(const unsigned char* payload, const size_t payload_size,
                   JxlColorEncoding* color_encoding) {
@@ -447,7 +445,7 @@ struct Reader {
     next += to_copy;
     return (len == to_copy);
   }
-  bool Eof() { return next == last; }
+  bool Eof() const { return next == last; }
 };
 
 const unsigned long cMaxPNGSize = 1000000UL;
@@ -463,7 +461,8 @@ void info_fn(png_structp png_ptr, png_infop info_ptr) {
 
 void row_fn(png_structp png_ptr, png_bytep new_row, png_uint_32 row_num,
             int pass) {
-  APNGFrame* frame = (APNGFrame*)png_get_progressive_ptr(png_ptr);
+  APNGFrame* frame =
+      reinterpret_cast<APNGFrame*>(png_get_progressive_ptr(png_ptr));
   JXL_CHECK(frame);
   JXL_CHECK(row_num < frame->rows.size());
   JXL_CHECK(frame->rows[row_num] < frame->pixels.data() + frame->pixels.size());
@@ -508,7 +507,7 @@ int processing_start(png_structp& png_ptr, png_infop& info_ptr, void* frame_ptr,
   }
 
   png_set_keep_unknown_chunks(png_ptr, 1, kIgnoredPngChunks,
-                              (int)sizeof(kIgnoredPngChunks) / 5);
+                              static_cast<int>(sizeof(kIgnoredPngChunks) / 5));
 
   png_set_crc_action(png_ptr, PNG_CRC_QUIET_USE, PNG_CRC_QUIET_USE);
   png_set_progressive_read_fn(png_ptr, frame_ptr, info_fn, row_fn, NULL);
@@ -648,8 +647,8 @@ Status DecodeImageAPNG(const Span<const uint8_t> bytes,
     ppf->color_encoding.transfer_function = JXL_TRANSFER_FUNCTION_SRGB;
     ppf->color_encoding.rendering_intent = JXL_RENDERING_INTENT_RELATIVE;
 
-    if (!processing_start(png_ptr, info_ptr, (void*)&frameRaw, hasInfo,
-                          chunkIHDR, chunksInfo)) {
+    if (!processing_start(png_ptr, info_ptr, static_cast<void*>(&frameRaw),
+                          hasInfo, chunkIHDR, chunksInfo)) {
       while (!r.Eof()) {
         id = read_chunk(&r, &chunk);
         if (!id) break;
@@ -707,7 +706,8 @@ Status DecodeImageAPNG(const Span<const uint8_t> bytes,
 
           if (hasInfo) {
             memcpy(chunkIHDR.data() + 8, chunk.data() + 12, 8);
-            if (processing_start(png_ptr, info_ptr, (void*)&frameRaw, hasInfo,
+            if (processing_start(png_ptr, info_ptr,
+                                 static_cast<void*>(&frameRaw), hasInfo,
                                  chunkIHDR, chunksInfo)) {
               break;
             }
@@ -813,6 +813,8 @@ Status DecodeImageAPNG(const Span<const uint8_t> bytes,
             have_cicp = true;
             have_color = true;
             ppf->icc.clear();
+            ppf->primary_color_representation =
+                PackedPixelFile::kColorEncodingIsPrimary;
           }
         } else if (!have_cicp && id == kId_iCCP) {
           if (processing_data(png_ptr, info_ptr, chunk.data(), chunk.size())) {
@@ -830,6 +832,7 @@ Status DecodeImageAPNG(const Span<const uint8_t> bytes,
                                  &profile, &proflen);
           if (ok && proflen) {
             ppf->icc.assign(profile, profile + proflen);
+            ppf->primary_color_representation = PackedPixelFile::kIccIsPrimary;
             have_color = true;
             have_iccp = true;
           } else {

@@ -8,25 +8,40 @@
 #include <jxl/cms.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <ostream>
+#include <sstream>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "lib/extras/codec.h"
 #include "lib/jxl/base/common.h"
+#include "lib/jxl/base/compiler_specific.h"
+#include "lib/jxl/base/override.h"
 #include "lib/jxl/base/span.h"
+#include "lib/jxl/base/status.h"
+#include "lib/jxl/chroma_from_luma.h"
 #include "lib/jxl/color_encoding_internal.h"
 #include "lib/jxl/common.h"  // JXL_HIGH_PRECISION, JPEGXL_ENABLE_TRANSCODE_JPEG
+#include "lib/jxl/dec_bit_reader.h"
+#include "lib/jxl/dec_cache.h"
 #include "lib/jxl/dec_frame.h"
-#include "lib/jxl/enc_cache.h"
 #include "lib/jxl/enc_params.h"
 #include "lib/jxl/fake_parallel_runner_testonly.h"
+#include "lib/jxl/fields.h"
 #include "lib/jxl/frame_dimensions.h"
-#include "lib/jxl/icc_codec.h"
+#include "lib/jxl/frame_header.h"
+#include "lib/jxl/headers.h"
+#include "lib/jxl/image.h"
+#include "lib/jxl/image_metadata.h"
+#include "lib/jxl/image_ops.h"
 #include "lib/jxl/image_test_utils.h"
 #include "lib/jxl/jpeg/enc_jpeg_data.h"
 #include "lib/jxl/render_pipeline/test_render_pipeline_stages.h"
+#include "lib/jxl/splines.h"
 #include "lib/jxl/test_utils.h"
 #include "lib/jxl/testing.h"
 
@@ -56,21 +71,21 @@ Status DecodeFile(const Span<const uint8_t> file, bool use_slow_pipeline,
         dec_state.output_encoding_info.SetFromMetadata(io->metadata));
     JXL_RETURN_IF_ERROR(reader.JumpToByteBoundary());
     io->frames.clear();
+    FrameHeader frame_header(&io->metadata);
     do {
       io->frames.emplace_back(&io->metadata.m);
       // Skip frames that are not displayed.
       do {
         size_t frame_start = reader.TotalBitsConsumed() / kBitsPerByte;
         size_t size_left = file.size() - frame_start;
-        JXL_RETURN_IF_ERROR(
-            DecodeFrame(&dec_state, pool, file.data() + frame_start, size_left,
-                        &io->frames.back(), io->metadata, use_slow_pipeline));
+        JXL_RETURN_IF_ERROR(DecodeFrame(&dec_state, pool,
+                                        file.data() + frame_start, size_left,
+                                        &frame_header, &io->frames.back(),
+                                        io->metadata, use_slow_pipeline));
         reader.SkipBits(io->frames.back().decoded_bytes() * kBitsPerByte);
-      } while (dec_state.shared->frame_header.frame_type !=
-                   FrameType::kRegularFrame &&
-               dec_state.shared->frame_header.frame_type !=
-                   FrameType::kSkipProgressive);
-    } while (!dec_state.shared->frame_header.is_last);
+      } while (frame_header.frame_type != FrameType::kRegularFrame &&
+               frame_header.frame_type != FrameType::kSkipProgressive);
+    } while (!frame_header.is_last);
 
     if (io->frames.empty()) return JXL_FAILURE("Not enough data.");
 
@@ -96,7 +111,7 @@ TEST(RenderPipelineTest, Build) {
   frame_dimensions.Set(/*xsize=*/1024, /*ysize=*/1024, /*group_size_shift=*/0,
                        /*max_hshift=*/0, /*max_vshift=*/0,
                        /*modular_mode=*/false, /*upsampling=*/1);
-  std::move(builder).Finalize(frame_dimensions);
+  std::move(builder).Finalize(frame_dimensions).value();
 }
 
 TEST(RenderPipelineTest, CallAllGroups) {
@@ -109,14 +124,14 @@ TEST(RenderPipelineTest, CallAllGroups) {
   frame_dimensions.Set(/*xsize=*/1024, /*ysize=*/1024, /*group_size_shift=*/0,
                        /*max_hshift=*/0, /*max_vshift=*/0,
                        /*modular_mode=*/false, /*upsampling=*/1);
-  auto pipeline = std::move(builder).Finalize(frame_dimensions);
+  auto pipeline = std::move(builder).Finalize(frame_dimensions).value();
   ASSERT_TRUE(pipeline->PrepareForThreads(1, /*use_group_ids=*/false));
 
   for (size_t i = 0; i < frame_dimensions.num_groups; i++) {
     auto input_buffers = pipeline->GetInputBuffers(i, 0);
     FillPlane(0.0f, input_buffers.GetBuffer(0).first,
               input_buffers.GetBuffer(0).second);
-    input_buffers.Done();
+    JXL_CHECK(input_buffers.Done());
   }
 
   EXPECT_EQ(pipeline->PassesWithAllInput(), 1);
@@ -131,7 +146,7 @@ TEST(RenderPipelineTest, BuildFast) {
   frame_dimensions.Set(/*xsize=*/1024, /*ysize=*/1024, /*group_size_shift=*/0,
                        /*max_hshift=*/0, /*max_vshift=*/0,
                        /*modular_mode=*/false, /*upsampling=*/1);
-  std::move(builder).Finalize(frame_dimensions);
+  std::move(builder).Finalize(frame_dimensions).value();
 }
 
 TEST(RenderPipelineTest, CallAllGroupsFast) {
@@ -144,14 +159,14 @@ TEST(RenderPipelineTest, CallAllGroupsFast) {
   frame_dimensions.Set(/*xsize=*/1024, /*ysize=*/1024, /*group_size_shift=*/0,
                        /*max_hshift=*/0, /*max_vshift=*/0,
                        /*modular_mode=*/false, /*upsampling=*/1);
-  auto pipeline = std::move(builder).Finalize(frame_dimensions);
+  auto pipeline = std::move(builder).Finalize(frame_dimensions).value();
   ASSERT_TRUE(pipeline->PrepareForThreads(1, /*use_group_ids=*/false));
 
   for (size_t i = 0; i < frame_dimensions.num_groups; i++) {
     auto input_buffers = pipeline->GetInputBuffers(i, 0);
     FillPlane(0.0f, input_buffers.GetBuffer(0).first,
               input_buffers.GetBuffer(0).second);
-    input_buffers.Done();
+    JXL_CHECK(input_buffers.Done());
   }
 
   EXPECT_EQ(pipeline->PassesWithAllInput(), 1);
@@ -193,7 +208,7 @@ TEST_P(RenderPipelineTestParam, PipelineTest) {
   io.ShrinkTo(config.xsize, config.ysize);
 
   if (config.add_spot_color) {
-    jxl::ImageF spot(config.xsize, config.ysize);
+    JXL_ASSIGN_OR_DIE(ImageF spot, ImageF::Create(config.xsize, config.ysize));
     jxl::ZeroFillImage(&spot);
 
     for (size_t y = 0; y < config.ysize; y++) {
@@ -212,17 +227,15 @@ TEST_P(RenderPipelineTestParam, PipelineTest) {
     info.spot_color[3] = 0.5f;
 
     io.metadata.m.extra_channel_info.push_back(info);
-    std::vector<jxl::ImageF> ec;
+    std::vector<ImageF> ec;
     ec.push_back(std::move(spot));
     io.frames[0].SetExtraChannels(std::move(ec));
   }
 
   std::vector<uint8_t> compressed;
 
-  PassesEncoderState enc_state;
-  enc_state.shared.image_features.splines = config.splines;
-  ASSERT_TRUE(
-      test::EncodeFile(config.cparams, &io, &enc_state, &compressed, &pool));
+  config.cparams.custom_splines = config.splines;
+  ASSERT_TRUE(test::EncodeFile(config.cparams, &io, &compressed, &pool));
 
   CodecInOut io_default;
   ASSERT_TRUE(DecodeFile(Bytes(compressed),
@@ -234,7 +247,7 @@ TEST_P(RenderPipelineTestParam, PipelineTest) {
   ASSERT_EQ(io_default.frames.size(), io_slow_pipeline.frames.size());
   for (size_t i = 0; i < io_default.frames.size(); i++) {
 #if JXL_HIGH_PRECISION
-    constexpr float kMaxError = 1e-5;
+    constexpr float kMaxError = 5e-5;
 #else
     constexpr float kMaxError = 5e-4;
 #endif

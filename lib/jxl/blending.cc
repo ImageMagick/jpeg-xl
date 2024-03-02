@@ -6,35 +6,33 @@
 #include "lib/jxl/blending.h"
 
 #include "lib/jxl/alpha.h"
-#include "lib/jxl/image_ops.h"
 
 namespace jxl {
 
-bool NeedsBlending(PassesDecoderState* dec_state) {
-  const PassesSharedState& state = *dec_state->shared;
-  if (!(state.frame_header.frame_type == FrameType::kRegularFrame ||
-        state.frame_header.frame_type == FrameType::kSkipProgressive)) {
+bool NeedsBlending(const FrameHeader& frame_header) {
+  if (!(frame_header.frame_type == FrameType::kRegularFrame ||
+        frame_header.frame_type == FrameType::kSkipProgressive)) {
     return false;
   }
-  const auto& info = state.frame_header.blending_info;
+  const auto& info = frame_header.blending_info;
   bool replace_all = (info.mode == BlendMode::kReplace);
-  for (const auto& ec_i : state.frame_header.extra_channel_blending_info) {
+  for (const auto& ec_i : frame_header.extra_channel_blending_info) {
     if (ec_i.mode != BlendMode::kReplace) {
       replace_all = false;
     }
   }
   // Replace the full frame: nothing to do.
-  if (!state.frame_header.custom_size_or_origin && replace_all) {
+  if (!frame_header.custom_size_or_origin && replace_all) {
     return false;
   }
   return true;
 }
 
-void PerformBlending(const float* const* bg, const float* const* fg,
-                     float* const* out, size_t x0, size_t xsize,
-                     const PatchBlending& color_blending,
-                     const PatchBlending* ec_blending,
-                     const std::vector<ExtraChannelInfo>& extra_channel_info) {
+Status PerformBlending(
+    const float* const* bg, const float* const* fg, float* const* out,
+    size_t x0, size_t xsize, const PatchBlending& color_blending,
+    const PatchBlending* ec_blending,
+    const std::vector<ExtraChannelInfo>& extra_channel_info) {
   bool has_alpha = false;
   size_t num_ec = extra_channel_info.size();
   for (size_t i = 0; i < num_ec; i++) {
@@ -43,7 +41,7 @@ void PerformBlending(const float* const* bg, const float* const* fg,
       break;
     }
   }
-  ImageF tmp(xsize, 3 + num_ec);
+  JXL_ASSIGN_OR_RETURN(ImageF tmp, ImageF::Create(xsize, 3 + num_ec));
   // Blend extra channels first so that we use the pre-blending alpha.
   for (size_t i = 0; i < num_ec; i++) {
     if (ec_blending[i].mode == PatchBlendMode::kAdd) {
@@ -147,6 +145,7 @@ void PerformBlending(const float* const* bg, const float* const* fg,
   for (size_t i = 0; i < 3 + num_ec; i++) {
     if (xsize != 0) memcpy(out[i] + x0, tmp.Row(i), xsize * sizeof(**out));
   }
+  return true;
 }
 
 }  // namespace jxl

@@ -17,7 +17,6 @@ target_include_directories(jxl_testlib-internal PUBLIC
 )
 target_link_libraries(jxl_testlib-internal
   hwy
-  jxl_extras_nocodec-internal
   jxl-internal
   jxl_threads
 )
@@ -30,6 +29,7 @@ endif()
 list(APPEND JPEGXL_INTERNAL_TESTS
   # TODO(deymo): Move this to tools/
   ../tools/djxl_fuzzer_test.cc
+  ../tools/gauss_blur_test.cc
 )
 
 find_package(GTest)
@@ -79,9 +79,13 @@ foreach (TESTFILE IN LISTS JPEGXL_INTERNAL_TESTS)
     gmock
     GTest::GTest
     GTest::Main
-    jxl_extras-internal
     jxl_testlib-internal
+    jxl_extras-internal
   )
+  if(TESTFILE STREQUAL ../tools/gauss_blur_test.cc)
+    target_link_libraries(${TESTNAME} jxl_gauss_blur)
+  endif()
+
   # Output test targets in the test directory.
   set_target_properties(${TESTNAME} PROPERTIES PREFIX "tests/")
   if (WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")

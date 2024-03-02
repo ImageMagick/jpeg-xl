@@ -6,6 +6,7 @@
 #include "lib/jxl/splines.h"
 
 #include <algorithm>
+#include <cinttypes>
 #include <cmath>
 #include <limits>
 
@@ -139,8 +140,9 @@ void ComputeSegments(const Spline::Point& center, const float intensity,
   segment.inv_sigma = 1.0f / sigma;
   segment.sigma_over_4_times_intensity = .25f * sigma * intensity;
   segment.maximum_distance = maximum_distance;
-  ssize_t y0 = center.y - maximum_distance + .5f;
-  ssize_t y1 = center.y + maximum_distance + 1.5f;  // one-past-the-end
+  ssize_t y0 = std::llround(center.y - maximum_distance);
+  ssize_t y1 =
+      std::llround(center.y + maximum_distance) + 1;  // one-past-the-end
   for (ssize_t y = std::max<ssize_t>(y0, 0); y < y1; y++) {
     segments_by_y.emplace_back(y, segments.size());
   }
@@ -226,7 +228,7 @@ float InvAdjustedQuant(const int32_t adjustment) {
 }
 
 // X, Y, B, sigma.
-static constexpr float kChannelWeight[] = {0.0042f, 0.075f, 0.07f, .3333f};
+constexpr float kChannelWeight[] = {0.0042f, 0.075f, 0.07f, .3333f};
 
 Status DecodeAllStartingPoints(std::vector<Spline::Point>* const points,
                                BitReader* const br, ANSSymbolReader* reader,
@@ -509,6 +511,9 @@ Status QuantizedSpline::Decode(const std::vector<uint8_t>& context_map,
                                size_t* total_num_control_points) {
   const size_t num_control_points =
       decoder->ReadHybridUint(kNumControlPointsContext, br, context_map);
+  if (num_control_points > max_control_points) {
+    return JXL_FAILURE("Too many control points: %" PRIuS, num_control_points);
+  }
   *total_num_control_points += num_control_points;
   if (*total_num_control_points > max_control_points) {
     return JXL_FAILURE("Too many control points: %" PRIuS,
@@ -565,13 +570,15 @@ Status Splines::Decode(jxl::BitReader* br, const size_t num_pixels) {
   JXL_RETURN_IF_ERROR(
       DecodeHistograms(br, kNumSplineContexts, &code, &context_map));
   ANSSymbolReader decoder(&code, br);
-  const size_t num_splines =
-      1 + decoder.ReadHybridUint(kNumSplinesContext, br, context_map);
+  size_t num_splines =
+      decoder.ReadHybridUint(kNumSplinesContext, br, context_map);
   size_t max_control_points = std::min(
       kMaxNumControlPoints, num_pixels / kMaxNumControlPointsPerPixelRatio);
-  if (num_splines > max_control_points) {
+  if (num_splines > max_control_points ||
+      num_splines + 1 > max_control_points) {
     return JXL_FAILURE("Too many splines: %" PRIuS, num_splines);
   }
+  num_splines++;
   JXL_RETURN_IF_ERROR(DecodeAllStartingPoints(&starting_points_, br, &decoder,
                                               context_map, num_splines));
 
@@ -640,8 +647,9 @@ Status Splines::InitializeDrawCache(const size_t image_xsize,
   }
   // TODO(firsching) Change this into a JXL_FAILURE for level 5 codestreams.
   if (total_estimated_area_reached >
-      std::min((8 * image_xsize * image_ysize + (uint64_t(1) << 25)),
-               (uint64_t(1) << 30))) {
+      std::min(
+          (8 * image_xsize * image_ysize + (static_cast<uint64_t>(1) << 25)),
+          (static_cast<uint64_t>(1) << 30))) {
     JXL_WARNING(
         "Large total_estimated_area_reached, expect slower decoding: %" PRIu64,
         total_estimated_area_reached);

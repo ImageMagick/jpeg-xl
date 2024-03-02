@@ -109,8 +109,8 @@ IntersectionType BoxIntersects(StaticPropRange needle, StaticPropRange haystack,
 void SplitTreeSamples(TreeSamples &tree_samples, size_t begin, size_t pos,
                       size_t end, size_t prop) {
   auto cmp = [&](size_t a, size_t b) {
-    return int32_t(tree_samples.Property(prop, a)) -
-           int32_t(tree_samples.Property(prop, b));
+    return static_cast<int32_t>(tree_samples.Property(prop, a)) -
+           static_cast<int32_t>(tree_samples.Property(prop, b));
   };
   Rng rng(0);
   while (end > begin + 1) {
@@ -966,7 +966,7 @@ void CollectPixelSamples(const Image &image, const ModularOptions &options,
     const pixel_type *row = image.channel[channel_ids[i]].Row(y);
     pixel_samples.push_back(row[x]);
     size_t xp = x == 0 ? 1 : x - 1;
-    diff_samples.push_back((int64_t)row[x] - row[xp]);
+    diff_samples.push_back(static_cast<int64_t>(row[x]) - row[xp]);
   }
 }
 

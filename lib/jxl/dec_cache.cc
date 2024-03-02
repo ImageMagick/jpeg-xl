@@ -5,6 +5,7 @@
 
 #include "lib/jxl/dec_cache.h"
 
+#include "lib/jxl/base/status.h"
 #include "lib/jxl/blending.h"
 #include "lib/jxl/common.h"  // JXL_HIGH_PRECISION
 #include "lib/jxl/render_pipeline/stage_blending.h"
@@ -26,9 +27,9 @@
 
 namespace jxl {
 
-Status PassesDecoderState::PreparePipeline(ImageBundle* decoded,
+Status PassesDecoderState::PreparePipeline(const FrameHeader& frame_header,
+                                           ImageBundle* decoded,
                                            PipelineOptions options) {
-  const FrameHeader& frame_header = shared->frame_header;
   size_t num_c = 3 + frame_header.nonserialized_metadata->m.num_extra_channels;
   if (options.render_noise && (frame_header.flags & FrameHeader::kNoise) != 0) {
     num_c += 3;
@@ -141,7 +142,7 @@ Status PassesDecoderState::PreparePipeline(ImageBundle* decoded,
 
   if (fast_xyb_srgb8_conversion) {
 #if !JXL_HIGH_PRECISION
-    JXL_ASSERT(!NeedsBlending(this));
+    JXL_ASSERT(!NeedsBlending(frame_header));
     JXL_ASSERT(!frame_header.CanBeReferenced() ||
                frame_header.save_before_color_transform);
     JXL_ASSERT(!options.render_spotcolors ||
@@ -164,13 +165,13 @@ Status PassesDecoderState::PreparePipeline(ImageBundle* decoded,
       }
     }  // Nothing to do for kNone.
 
-    if (options.coalescing && NeedsBlending(this)) {
+    if (options.coalescing && NeedsBlending(frame_header)) {
       if (linear) {
         builder.AddStage(GetFromLinearStage(output_encoding_info));
         linear = false;
       }
-      builder.AddStage(
-          GetBlendingStage(this, output_encoding_info.color_encoding));
+      builder.AddStage(GetBlendingStage(frame_header, this,
+                                        output_encoding_info.color_encoding));
     }
 
     if (options.coalescing && frame_header.CanBeReferenced() &&
@@ -257,7 +258,8 @@ Status PassesDecoderState::PreparePipeline(ImageBundle* decoded,
           decoded, output_encoding_info.color_encoding));
     }
   }
-  render_pipeline = std::move(builder).Finalize(shared->frame_dim);
+  JXL_ASSIGN_OR_RETURN(render_pipeline,
+                       std::move(builder).Finalize(shared->frame_dim));
   return render_pipeline->IsInitialized();
 }
 

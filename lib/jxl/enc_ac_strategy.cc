@@ -18,20 +18,15 @@
 #include <hwy/highway.h>
 
 #include "lib/jxl/ac_strategy.h"
-#include "lib/jxl/ans_params.h"
 #include "lib/jxl/base/bits.h"
 #include "lib/jxl/base/compiler_specific.h"
 #include "lib/jxl/base/fast_math-inl.h"
 #include "lib/jxl/base/status.h"
-#include "lib/jxl/coeff_order_fwd.h"
-#include "lib/jxl/convolve.h"
-#include "lib/jxl/dct_scales.h"
 #include "lib/jxl/dec_transforms-inl.h"
 #include "lib/jxl/enc_aux_out.h"
 #include "lib/jxl/enc_debug_image.h"
 #include "lib/jxl/enc_params.h"
 #include "lib/jxl/enc_transforms-inl.h"
-#include "lib/jxl/entropy_coder.h"
 #include "lib/jxl/simd_util.h"
 
 // Some of the floating point constants in this file and in other
@@ -215,10 +210,10 @@ const uint8_t* TypeMask(const uint8_t& raw_strategy) {
   return kMask[raw_strategy];
 }
 
-void DumpAcStrategy(const AcStrategyImage& ac_strategy, size_t xsize,
-                    size_t ysize, const char* tag, AuxOut* aux_out,
-                    const CompressParams& cparams) {
-  Image3F color_acs(xsize, ysize);
+Status DumpAcStrategy(const AcStrategyImage& ac_strategy, size_t xsize,
+                      size_t ysize, const char* tag, AuxOut* aux_out,
+                      const CompressParams& cparams) {
+  JXL_ASSIGN_OR_RETURN(Image3F color_acs, Image3F::Create(xsize, ysize));
   for (size_t y = 0; y < ysize; y++) {
     float* JXL_RESTRICT rows[3] = {
         color_acs.PlaneRow(0, y),
@@ -269,7 +264,7 @@ void DumpAcStrategy(const AcStrategyImage& ac_strategy, size_t xsize,
       }
     }
   }
-  DumpImage(cparams, tag, color_acs);
+  return DumpImage(cparams, tag, color_acs);
 }
 
 }  // namespace
@@ -353,7 +348,9 @@ bool MultiBlockTransformCrossesVerticalBoundary(
 float EstimateEntropy(const AcStrategy& acs, float entropy_mul, size_t x,
                       size_t y, const ACSConfig& config,
                       const float* JXL_RESTRICT cmap_factors, float* block,
-                      float* scratch_space, uint32_t* quantized) {
+                      float* full_scratch_space, uint32_t* quantized) {
+  float* mem = full_scratch_space;
+  float* scratch_space = full_scratch_space + AcStrategy::kMaxCoeffArea;
   const size_t size = (1 << acs.log2_covered_blocks()) * kDCTBlockSize;
 
   // Apply transform.
@@ -403,8 +400,6 @@ float EstimateEntropy(const AcStrategy& acs, float entropy_mul, size_t x,
   float entropy = 0.0f;
   const HWY_CAPPED(float, 8) df8;
 
-  auto mem_alloc = hwy::AllocateAligned<float>(AcStrategy::kMaxCoeffArea);
-  float* mem = mem_alloc.get();
   auto loss = Zero(df8);
   for (size_t c = 0; c < 3; c++) {
     const float* inv_matrix = config.dequant->InvMatrix(acs.RawStrategy(), c);
@@ -790,8 +785,10 @@ void FindBestFirstLevelDivisionForSquare(
   }
 }
 
-void ProcessRectACS(PassesEncoderState* JXL_RESTRICT enc_state,
-                    const ACSConfig& config, const Rect& rect) {
+void ProcessRectACS(const CompressParams& cparams, const ACSConfig& config,
+                    const Rect& rect, const ColorCorrelationMap& cmap,
+                    float* JXL_RESTRICT block, uint32_t* JXL_RESTRICT quantized,
+                    AcStrategyImage* ac_strategy) {
   // Main philosophy here:
   // 1. First find best 8x8 transform for each area.
   // 2. Merging them into larger transforms where possibly, but
@@ -802,18 +799,8 @@ void ProcessRectACS(PassesEncoderState* JXL_RESTRICT enc_state,
   // maps happen to be at that resolution, and having
   // integral transforms cross these boundaries leads to
   // additional complications.
-  const CompressParams& cparams = enc_state->cparams;
   const float butteraugli_target = cparams.butteraugli_distance;
-  AcStrategyImage* ac_strategy = &enc_state->shared.ac_strategy;
-  const size_t dct_scratch_size =
-      3 * (MaxVectorSize() / sizeof(float)) * AcStrategy::kMaxBlockDim;
-  // TODO(veluca): reuse allocations
-  auto mem = hwy::AllocateAligned<float>(5 * AcStrategy::kMaxCoeffArea +
-                                         dct_scratch_size);
-  auto qmem = hwy::AllocateAligned<uint32_t>(AcStrategy::kMaxCoeffArea);
-  uint32_t* JXL_RESTRICT quantized = qmem.get();
-  float* JXL_RESTRICT block = mem.get();
-  float* JXL_RESTRICT scratch_space = mem.get() + 3 * AcStrategy::kMaxCoeffArea;
+  float* JXL_RESTRICT scratch_space = block + 3 * AcStrategy::kMaxCoeffArea;
   size_t bx = rect.x0();
   size_t by = rect.y0();
   JXL_ASSERT(rect.xsize() <= 8);
@@ -821,11 +808,9 @@ void ProcessRectACS(PassesEncoderState* JXL_RESTRICT enc_state,
   size_t tx = bx / kColorTileDimInBlocks;
   size_t ty = by / kColorTileDimInBlocks;
   const float cmap_factors[3] = {
-      enc_state->shared.cmap.YtoXRatio(
-          enc_state->shared.cmap.ytox_map.ConstRow(ty)[tx]),
+      cmap.YtoXRatio(cmap.ytox_map.ConstRow(ty)[tx]),
       0.0f,
-      enc_state->shared.cmap.YtoBRatio(
-          enc_state->shared.cmap.ytob_map.ConstRow(ty)[tx]),
+      cmap.YtoBRatio(cmap.ytob_map.ConstRow(ty)[tx]),
   };
   if (cparams.speed_tier > SpeedTier::kHare) return;
   // First compute the best 8x8 transform for each square. Later, we do not
@@ -1040,28 +1025,26 @@ HWY_AFTER_NAMESPACE();
 namespace jxl {
 HWY_EXPORT(ProcessRectACS);
 
-void AcStrategyHeuristics::Init(const Image3F& src,
-                                PassesEncoderState* enc_state) {
-  this->enc_state = enc_state;
-  config.dequant = &enc_state->shared.matrices;
-  const CompressParams& cparams = enc_state->cparams;
+void AcStrategyHeuristics::Init(const Image3F& src, const Rect& rect_in,
+                                const ImageF& quant_field, const ImageF& mask,
+                                const ImageF& mask1x1,
+                                DequantMatrices* matrices) {
+  config.dequant = matrices;
 
   if (cparams.speed_tier >= SpeedTier::kCheetah) {
-    JXL_CHECK(enc_state->shared.matrices.EnsureComputed(1));  // DCT8 only
+    JXL_CHECK(matrices->EnsureComputed(1));  // DCT8 only
   } else {
     uint32_t acs_mask = 0;
     // All transforms up to 64x64.
     for (size_t i = 0; i < AcStrategy::DCT128X128; i++) {
       acs_mask |= (1 << i);
     }
-    JXL_CHECK(enc_state->shared.matrices.EnsureComputed(acs_mask));
+    JXL_CHECK(matrices->EnsureComputed(acs_mask));
   }
 
   // Image row pointers and strides.
-  config.quant_field_row = enc_state->initial_quant_field.Row(0);
-  config.quant_field_stride = enc_state->initial_quant_field.PixelsPerRow();
-  auto& mask = enc_state->initial_quant_masking;
-  auto& mask1x1 = enc_state->initial_quant_masking1x1;
+  config.quant_field_row = quant_field.Row(0);
+  config.quant_field_stride = quant_field.PixelsPerRow();
   if (mask.xsize() > 0 && mask.ysize() > 0) {
     config.masking_field_row = mask.Row(0);
     config.masking_field_stride = mask.PixelsPerRow();
@@ -1071,9 +1054,9 @@ void AcStrategyHeuristics::Init(const Image3F& src,
     config.masking1x1_field_stride = mask1x1.PixelsPerRow();
   }
 
-  config.src_rows[0] = src.ConstPlaneRow(0, 0);
-  config.src_rows[1] = src.ConstPlaneRow(1, 0);
-  config.src_rows[2] = src.ConstPlaneRow(2, 0);
+  config.src_rows[0] = rect_in.ConstPlaneRow(src, 0, 0);
+  config.src_rows[1] = rect_in.ConstPlaneRow(src, 1, 0);
+  config.src_rows[2] = rect_in.ConstPlaneRow(src, 2, 0);
   config.src_stride = src.PixelsPerRow();
 
   // Entropy estimate is composed of two factors:
@@ -1093,25 +1076,34 @@ void AcStrategyHeuristics::Init(const Image3F& src,
   config.info_loss_multiplier *= pow(ratio, kPow1);
   config.zeros_mul *= pow(ratio, kPow2);
   config.cost_delta *= pow(ratio, kPow3);
-  JXL_ASSERT(enc_state->shared.ac_strategy.xsize() ==
-             enc_state->shared.frame_dim.xsize_blocks);
-  JXL_ASSERT(enc_state->shared.ac_strategy.ysize() ==
-             enc_state->shared.frame_dim.ysize_blocks);
 }
 
-void AcStrategyHeuristics::ProcessRect(const Rect& rect) {
-  const CompressParams& cparams = enc_state->cparams;
+void AcStrategyHeuristics::PrepareForThreads(std::size_t num_threads) {
+  const size_t dct_scratch_size =
+      3 * (MaxVectorSize() / sizeof(float)) * AcStrategy::kMaxBlockDim;
+  mem_per_thread = 6 * AcStrategy::kMaxCoeffArea + dct_scratch_size;
+  mem = hwy::AllocateAligned<float>(num_threads * mem_per_thread);
+  qmem_per_thread = AcStrategy::kMaxCoeffArea;
+  qmem = hwy::AllocateAligned<uint32_t>(num_threads * qmem_per_thread);
+}
+
+void AcStrategyHeuristics::ProcessRect(const Rect& rect,
+                                       const ColorCorrelationMap& cmap,
+                                       AcStrategyImage* ac_strategy,
+                                       size_t thread) {
   // In Falcon mode, use DCT8 everywhere and uniform quantization.
   if (cparams.speed_tier >= SpeedTier::kCheetah) {
-    enc_state->shared.ac_strategy.FillDCT8(rect);
+    ac_strategy->FillDCT8(rect);
     return;
   }
   HWY_DYNAMIC_DISPATCH(ProcessRectACS)
-  (enc_state, config, rect);
+  (cparams, config, rect, cmap, mem.get() + thread * mem_per_thread,
+   qmem.get() + thread * qmem_per_thread, ac_strategy);
 }
 
-void AcStrategyHeuristics::Finalize(AuxOut* aux_out) {
-  const auto& ac_strategy = enc_state->shared.ac_strategy;
+Status AcStrategyHeuristics::Finalize(const FrameDimensions& frame_dim,
+                                      const AcStrategyImage& ac_strategy,
+                                      AuxOut* aux_out) {
   // Accounting and debug output.
   if (aux_out != nullptr) {
     aux_out->num_small_blocks =
@@ -1147,11 +1139,12 @@ void AcStrategyHeuristics::Finalize(AuxOut* aux_out) {
   }
 
   // if (JXL_DEBUG_AC_STRATEGY && WantDebugOutput(aux_out)) {
-  if (JXL_DEBUG_AC_STRATEGY && WantDebugOutput(enc_state->cparams)) {
-    DumpAcStrategy(ac_strategy, enc_state->shared.frame_dim.xsize,
-                   enc_state->shared.frame_dim.ysize, "ac_strategy", aux_out,
-                   enc_state->cparams);
+  if (JXL_DEBUG_AC_STRATEGY && WantDebugOutput(cparams)) {
+    JXL_RETURN_IF_ERROR(DumpAcStrategy(ac_strategy, frame_dim.xsize,
+                                       frame_dim.ysize, "ac_strategy", aux_out,
+                                       cparams));
   }
+  return true;
 }
 
 }  // namespace jxl

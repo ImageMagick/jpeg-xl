@@ -286,10 +286,11 @@ void AdjustQuantBlockAC(const Quantizer& quantizer, size_t c,
   {
     // Reduce quant in highly active areas.
     int32_t div = (xsize * ysize);
-    int32_t activity = (hfNonZeros[0] + div / 2) / div;
+    int32_t activity = (static_cast<int32_t>(hfNonZeros[0]) + div / 2) / div;
     int32_t orig_qp_limit = std::max(4, *quant / 2);
     for (int i = 1; i < 4; ++i) {
-      activity = std::min<int32_t>(activity, (hfNonZeros[i] + div / 2) / div);
+      activity = std::min(
+          activity, (static_cast<int32_t>(hfNonZeros[i]) + div / 2) / div);
     }
     if (activity >= 15) {
       activity = 15;
@@ -316,7 +317,7 @@ void QuantizeRoundtripYBlockAC(PassesEncoderState* enc_state, const size_t size,
                                float* JXL_RESTRICT inout,
                                int32_t* JXL_RESTRICT quantized) {
   float thres_y[4] = {0.58f, 0.64f, 0.64f, 0.64f};
-  {
+  if (enc_state->cparams.speed_tier <= SpeedTier::kHare) {
     int32_t max_quant = 0;
     int quant_orig = *quant;
     float val[3] = {enc_state->x_qm_multiplier, 1.0f,
@@ -337,6 +338,11 @@ void QuantizeRoundtripYBlockAC(PassesEncoderState* enc_state, const size_t size,
       max_quant = std::max(*quant, max_quant);
     }
     *quant = max_quant;
+  } else {
+    thres_y[0] = 0.56;
+    thres_y[1] = 0.62;
+    thres_y[2] = 0.62;
+    thres_y[3] = 0.62;
   }
 
   QuantizeBlockAC(quantizer, error_diffusion, 1, 1.0f, quant_kind, xsize, ysize,
@@ -357,14 +363,17 @@ void QuantizeRoundtripYBlockAC(PassesEncoderState* enc_state, const size_t size,
 }
 
 void ComputeCoefficients(size_t group_idx, PassesEncoderState* enc_state,
-                         const Image3F& opsin, Image3F* dc) {
-  const Rect block_group_rect = enc_state->shared.BlockGroupRect(group_idx);
-  const Rect group_rect = enc_state->shared.GroupRect(group_idx);
+                         const Image3F& opsin, const Rect& rect, Image3F* dc) {
+  const Rect block_group_rect =
+      enc_state->shared.frame_dim.BlockGroupRect(group_idx);
   const Rect cmap_rect(
       block_group_rect.x0() / kColorTileDimInBlocks,
       block_group_rect.y0() / kColorTileDimInBlocks,
       DivCeil(block_group_rect.xsize(), kColorTileDimInBlocks),
       DivCeil(block_group_rect.ysize(), kColorTileDimInBlocks));
+  const Rect group_rect =
+      enc_state->shared.frame_dim.GroupRect(group_idx).Translate(rect.x0(),
+                                                                 rect.y0());
 
   const size_t xsize_blocks = block_group_rect.xsize();
   const size_t ysize_blocks = block_group_rect.ysize();
@@ -503,9 +512,9 @@ HWY_AFTER_NAMESPACE();
 namespace jxl {
 HWY_EXPORT(ComputeCoefficients);
 void ComputeCoefficients(size_t group_idx, PassesEncoderState* enc_state,
-                         const Image3F& opsin, Image3F* dc) {
+                         const Image3F& opsin, const Rect& rect, Image3F* dc) {
   return HWY_DYNAMIC_DISPATCH(ComputeCoefficients)(group_idx, enc_state, opsin,
-                                                   dc);
+                                                   rect, dc);
 }
 
 Status EncodeGroupTokenizedCoefficients(size_t group_idx, size_t pass_idx,
@@ -523,10 +532,12 @@ Status EncodeGroupTokenizedCoefficients(size_t group_idx, size_t pass_idx,
     writer->Write(histo_selector_bits, histogram_idx);
     allotment.ReclaimAndCharge(writer, kLayerAC, aux_out);
   }
+  size_t context_offset =
+      histogram_idx * enc_state.shared.block_ctx_map.NumACContexts();
   WriteTokens(enc_state.passes[pass_idx].ac_tokens[group_idx],
               enc_state.passes[pass_idx].codes,
-              enc_state.passes[pass_idx].context_map, writer, kLayerACTokens,
-              aux_out);
+              enc_state.passes[pass_idx].context_map, context_offset, writer,
+              kLayerACTokens, aux_out);
 
   return true;
 }

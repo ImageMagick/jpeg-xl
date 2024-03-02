@@ -5,6 +5,7 @@
 
 #include <jxl/decode.h>
 #include <jxl/types.h>
+#include <jxl/version.h>
 
 #include <algorithm>
 #include <array>
@@ -1117,7 +1118,7 @@ JxlDecoderStatus JxlDecoderProcessSections(JxlDecoder* dec) {
     if (OutOfBounds(pos, size, span.size())) {
       break;
     }
-    auto br = new jxl::BitReader(jxl::Bytes(span.data() + pos, size));
+    auto* br = new jxl::BitReader(jxl::Bytes(span.data() + pos, size));
     section_info.emplace_back(jxl::FrameDecoder::SectionInfo{br, id, i});
     section_status.emplace_back();
     pos += size;
@@ -2701,7 +2702,7 @@ JxlDecoderStatus JxlDecoderSetOutputColorProfile(
         "setting output color profile from icc_data not yet implemented.");
   }
   JXL_API_RETURN_IF_ERROR(
-      (int)output_encoding.MaybeSetColorEncoding(std::move(c_dst)));
+      static_cast<int>(output_encoding.MaybeSetColorEncoding(c_dst)));
 
   return JXL_DEC_SUCCESS;
 }
@@ -2778,6 +2779,17 @@ JxlDecoderStatus JxlDecoderGetBoxSizeRaw(const JxlDecoder* dec,
   }
   if (size) {
     *size = dec->box_size;
+  }
+  return JXL_DEC_SUCCESS;
+}
+
+JxlDecoderStatus JxlDecoderGetBoxSizeContents(const JxlDecoder* dec,
+                                              uint64_t* size) {
+  if (!dec->box_event) {
+    return JXL_API_ERROR("can only get box info after JXL_DEC_BOX event");
+  }
+  if (size) {
+    *size = dec->box_contents_size;
   }
   return JXL_DEC_SUCCESS;
 }

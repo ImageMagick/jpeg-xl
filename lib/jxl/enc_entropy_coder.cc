@@ -90,8 +90,8 @@ int32_t NumNonZeroExceptLLF(const size_t cx, const size_t cy,
   }
 
   // We want area - sum_zero, add because neg_sum_zero is already negated.
-  const int32_t nzeros =
-      int32_t(cx * cy * kDCTBlockSize) + GetLane(SumOfLanes(di, neg_sum_zero));
+  const int32_t nzeros = static_cast<int32_t>(cx * cy * kDCTBlockSize) +
+                         GetLane(SumOfLanes(di, neg_sum_zero));
 
   const int32_t shifted_nzeros = static_cast<int32_t>(
       (nzeros + covered_blocks - 1) >> log2_covered_blocks);
@@ -139,8 +139,8 @@ int32_t NumNonZero8x8ExceptDC(const int32_t* JXL_RESTRICT block,
   }
 
   // We want 64 - sum_zero, add because neg_sum_zero is already negated.
-  const int32_t nzeros =
-      int32_t(kDCTBlockSize) + GetLane(SumOfLanes(di, neg_sum_zero));
+  const int32_t nzeros = static_cast<int32_t>(kDCTBlockSize) +
+                         GetLane(SumOfLanes(di, neg_sum_zero));
 
   *nzeros_pos = nzeros;
 
@@ -164,10 +164,9 @@ void TokenizeCoefficients(const coeff_order_t* JXL_RESTRICT orders,
                           const BlockCtxMap& block_ctx_map) {
   const size_t xsize_blocks = rect.xsize();
   const size_t ysize_blocks = rect.ysize();
-
+  output->clear();
   // TODO(user): update the estimate: usually less coefficients are used.
-  output->reserve(output->size() +
-                  3 * xsize_blocks * ysize_blocks * kDCTBlockSize);
+  output->reserve(3 * xsize_blocks * ysize_blocks * kDCTBlockSize);
 
   size_t offset[3] = {};
   const size_t nzeros_stride = tmp_num_nzeroes->PixelsPerRow();

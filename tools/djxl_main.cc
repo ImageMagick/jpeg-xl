@@ -8,7 +8,6 @@
 #include <jxl/thread_parallel_runner_cxx.h>
 #include <jxl/types.h>
 
-#include <climits>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -16,19 +15,18 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #include "lib/extras/alpha_blend.h"
-#include "lib/extras/codec.h"
 #include "lib/extras/dec/decode.h"
 #include "lib/extras/dec/jxl.h"
 #include "lib/extras/enc/apng.h"
 #include "lib/extras/enc/encode.h"
 #include "lib/extras/enc/exr.h"
 #include "lib/extras/enc/jpg.h"
-#include "lib/extras/enc/pnm.h"
 #include "lib/extras/packed_image.h"
 #include "lib/extras/time.h"
 #include "lib/jxl/base/printf_macros.h"
@@ -315,7 +313,12 @@ std::string Filename(const std::string& filename, const std::string& extension,
 void AddFormatsWithAlphaChannel(std::vector<JxlPixelFormat>* formats) {
   auto add_format = [&](JxlPixelFormat format) {
     for (auto f : *formats) {
-      if (memcmp(&f, &format, sizeof(format)) == 0) return;
+      // NB: must reflect changes in JxlPixelFormat.
+      if (f.num_channels == format.num_channels &&
+          f.data_type == format.data_type &&
+          f.endianness == format.endianness && f.align == format.align) {
+        return;
+      }
     }
     formats->push_back(format);
   };
@@ -388,7 +391,6 @@ bool DecompressJxlToPackedPixelFile(
   dparams.runner = JxlThreadParallelRunner;
   dparams.runner_opaque = runner;
   dparams.allow_partial_input = args.allow_partial_files;
-  dparams.need_icc = !args.icc_out.empty();
   if (args.bits_per_sample == 0) {
     dparams.output_bitdepth.type = JXL_BIT_DEPTH_FROM_CODESTREAM;
   } else if (args.bits_per_sample > 0) {
@@ -594,7 +596,7 @@ int main(int argc, const char* argv[]) {
       }
       jxl::extras::EncodedImage encoded_image;
       if (!args.quiet) cmdline.VerbosePrintf(2, "Encoding decoded image\n");
-      if (!encoder->Encode(ppf, &encoded_image)) {
+      if (!encoder->Encode(ppf, &encoded_image, nullptr)) {
         fprintf(stderr, "Encode failed\n");
         return EXIT_FAILURE;
       }
@@ -609,7 +611,7 @@ int main(int argc, const char* argv[]) {
                       : encoded_image.extra_channel_bitstreams[i - 1][j]);
           std::string fn =
               Filename(filename_out, extension, i, j, nlayers, nframes);
-          if (!jpegxl::tools::WriteFile(fn.c_str(), bitstream)) {
+          if (!jpegxl::tools::WriteFile(fn, bitstream)) {
             return EXIT_FAILURE;
           }
           if (!args.quiet)

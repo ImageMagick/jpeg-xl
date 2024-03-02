@@ -58,15 +58,15 @@ struct BitWriter {
     return std::move(storage_);
   }
 
- private:
   // Must be byte-aligned before calling.
   void AppendByteAligned(const Span<const uint8_t>& span);
 
- public:
   // NOTE: no allotment needed, the other BitWriters have already been charged.
   void AppendByteAligned(const BitWriter& other);
   void AppendByteAligned(const std::vector<std::unique_ptr<BitWriter>>& others);
   void AppendByteAligned(const std::vector<BitWriter>& others);
+
+  void AppendUnaligned(const BitWriter& other);
 
   class Allotment {
    public:

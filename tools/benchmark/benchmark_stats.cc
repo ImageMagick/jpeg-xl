@@ -109,7 +109,7 @@ struct ColumnDescriptor {
   bool more;  // Whether to print only if more_columns is enabled
 };
 
-static ColumnDescriptor ExtraMetricDescriptor() {
+ColumnDescriptor ExtraMetricDescriptor() {
   ColumnDescriptor d{{"DO NOT USE"}, 12, 4, TYPE_POSITIVE_FLOAT, false};
   return d;
 }
@@ -146,12 +146,12 @@ std::vector<ColumnDescriptor> GetColumnDescriptors(size_t num_extra_metrics) {
 }
 
 // Computes throughput [megapixels/s] as reported in the report table
-static double ComputeSpeed(size_t pixels, double time_s) {
+double ComputeSpeed(size_t pixels, double time_s) {
   if (time_s == 0.0) return 0;
   return pixels * 1E-6 / time_s;
 }
 
-static std::string FormatFloat(const ColumnDescriptor& label, double value) {
+std::string FormatFloat(const ColumnDescriptor& label, double value) {
   std::string result =
       StringPrintf("%*.*f", label.width - 1, label.precision, value);
 
@@ -281,9 +281,9 @@ static std::string PrintFormattedEntries(
     }
     // All except the first one are right-aligned, the first one is the name,
     // others are numbers with digits matching from the right.
-    if (i == 0) out += value.c_str();
+    if (i == 0) out += value;
     out += std::string(numspaces, ' ');
-    if (i != 0) out += value.c_str();
+    if (i != 0) out += value;
   }
   return out + "\n";
 }
@@ -303,9 +303,9 @@ std::string PrintHeader(const std::vector<std::string>& extra_metrics_names) {
     const std::string& label = descriptors[i].label;
     int numspaces = descriptors[i].width - label.size();
     // All except the first one are right-aligned.
-    if (i == 0) out += label.c_str();
+    if (i == 0) out += label;
     out += std::string(numspaces, ' ');
-    if (i != 0) out += label.c_str();
+    if (i != 0) out += label;
   }
   for (const std::string& em : extra_metrics_names) {
     int numspaces = ExtraMetricDescriptor().width - em.size();

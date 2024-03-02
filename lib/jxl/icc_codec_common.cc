@@ -17,7 +17,7 @@
 
 namespace jxl {
 namespace {
-static uint8_t ByteKind1(uint8_t b) {
+uint8_t ByteKind1(uint8_t b) {
   if ('a' <= b && b <= 'z') return 0;
   if ('A' <= b && b <= 'Z') return 0;
   if ('0' <= b && b <= '9') return 1;
@@ -30,7 +30,7 @@ static uint8_t ByteKind1(uint8_t b) {
   return 7;
 }
 
-static uint8_t ByteKind2(uint8_t b) {
+uint8_t ByteKind2(uint8_t b) {
   if ('a' <= b && b <= 'z') return 0;
   if ('A' <= b && b <= 'Z') return 0;
   if ('0' <= b && b <= '9') return 1;
@@ -81,8 +81,8 @@ void AppendKeyword(const Tag& keyword, PaddedBytes* data) {
 }
 
 // Checks if a + b > size, taking possible integer overflow into account.
-Status CheckOutOfBounds(size_t a, size_t b, size_t size) {
-  size_t pos = a + b;
+Status CheckOutOfBounds(uint64_t a, uint64_t b, uint64_t size) {
+  uint64_t pos = a + b;
   if (pos > size) return JXL_FAILURE("Out of bounds");
   if (pos < a) return JXL_FAILURE("Out of bounds");  // overflow happened
   return true;
@@ -105,7 +105,7 @@ const uint8_t kIccInitialHeaderPrediction[kICCHeaderSize] = {
     0,   0,   0,   0,   0,   0,   0,   0,   0, 0, 0, 0, 0,   0,   0,   0,
 };
 
-const Span<const uint8_t> ICCInitialHeaderPrediction() {
+Span<const uint8_t> ICCInitialHeaderPrediction() {
   return Bytes(kIccInitialHeaderPrediction);
 }
 

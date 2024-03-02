@@ -10,8 +10,8 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <limits>
-#include <queue>
 #include <utility>
 #include <vector>
 
@@ -28,9 +28,9 @@
 #include "lib/jxl/enc_params.h"
 #include "lib/jxl/enc_patch_dictionary.h"
 #include "lib/jxl/enc_quant_weights.h"
+#include "lib/jxl/frame_dimensions.h"
 #include "lib/jxl/frame_header.h"
 #include "lib/jxl/modular/encoding/context_predict.h"
-#include "lib/jxl/modular/encoding/enc_debug_tree.h"
 #include "lib/jxl/modular/encoding/enc_encoding.h"
 #include "lib/jxl/modular/encoding/encoding.h"
 #include "lib/jxl/modular/encoding/ma_common.h"
@@ -38,7 +38,7 @@
 #include "lib/jxl/modular/options.h"
 #include "lib/jxl/modular/transform/enc_transform.h"
 #include "lib/jxl/pack_signed.h"
-#include "lib/jxl/toc.h"
+#include "modular/options.h"
 
 namespace jxl {
 
@@ -48,15 +48,15 @@ namespace {
 // Squeeze default quantization factors
 // these quantization factors are for -Q 50  (other qualities simply scale the
 // factors; things are rounded down and obviously cannot get below 1)
-static const float squeeze_quality_factor =
+const float squeeze_quality_factor =
     0.35;  // for easy tweaking of the quality range (decrease this number for
            // higher quality)
-static const float squeeze_luma_factor =
+const float squeeze_luma_factor =
     1.1;  // for easy tweaking of the balance between luma (or anything
           // non-chroma) and chroma (decrease this number for higher quality
           // luma)
-static const float squeeze_quality_factor_xyb = 2.4f;
-static const float squeeze_xyb_qtable[3][16] = {
+const float squeeze_quality_factor_xyb = 2.4f;
+const float squeeze_xyb_qtable[3][16] = {
     {163.84, 81.92, 40.96, 20.48, 10.24, 5.12, 2.56, 1.28, 0.64, 0.32, 0.16,
      0.08, 0.04, 0.02, 0.01, 0.005},  // Y
     {1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1, 0.5, 0.5, 0.5, 0.5,
@@ -65,122 +65,13 @@ static const float squeeze_xyb_qtable[3][16] = {
      0.5},  // B-Y
 };
 
-static const float squeeze_luma_qtable[16] = {
-    163.84, 81.92, 40.96, 20.48, 10.24, 5.12, 2.56, 1.28,
-    0.64,   0.32,  0.16,  0.08,  0.04,  0.02, 0.01, 0.005};
+const float squeeze_luma_qtable[16] = {163.84, 81.92, 40.96, 20.48, 10.24, 5.12,
+                                       2.56,   1.28,  0.64,  0.32,  0.16,  0.08,
+                                       0.04,   0.02,  0.01,  0.005};
 // for 8-bit input, the range of YCoCg chroma is -255..255 so basically this
 // does 4:2:0 subsampling (two most fine grained layers get quantized away)
-static const float squeeze_chroma_qtable[16] = {
+const float squeeze_chroma_qtable[16] = {
     1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1, 0.5, 0.5, 0.5, 0.5, 0.5};
-
-// `cutoffs` must be sorted.
-Tree MakeFixedTree(int property, const std::vector<int32_t>& cutoffs,
-                   Predictor pred, size_t num_pixels) {
-  size_t log_px = CeilLog2Nonzero(num_pixels);
-  size_t min_gap = 0;
-  // Reduce fixed tree height when encoding small images.
-  if (log_px < 14) {
-    min_gap = 8 * (14 - log_px);
-  }
-  Tree tree;
-  struct NodeInfo {
-    size_t begin, end, pos;
-  };
-  std::queue<NodeInfo> q;
-  // Leaf IDs will be set by roundtrip decoding the tree.
-  tree.push_back(PropertyDecisionNode::Leaf(pred));
-  q.push(NodeInfo{0, cutoffs.size(), 0});
-  while (!q.empty()) {
-    NodeInfo info = q.front();
-    q.pop();
-    if (info.begin + min_gap >= info.end) continue;
-    uint32_t split = (info.begin + info.end) / 2;
-    tree[info.pos] =
-        PropertyDecisionNode::Split(property, cutoffs[split], tree.size());
-    q.push(NodeInfo{split + 1, info.end, tree.size()});
-    tree.push_back(PropertyDecisionNode::Leaf(pred));
-    q.push(NodeInfo{info.begin, split, tree.size()});
-    tree.push_back(PropertyDecisionNode::Leaf(pred));
-  }
-  return tree;
-}
-
-Tree PredefinedTree(ModularOptions::TreeKind tree_kind, size_t total_pixels) {
-  if (tree_kind == ModularOptions::TreeKind::kJpegTranscodeACMeta ||
-      tree_kind == ModularOptions::TreeKind::kTrivialTreeNoPredictor) {
-    // All the data is 0, so no need for a fancy tree.
-    return {PropertyDecisionNode::Leaf(Predictor::Zero)};
-  }
-  if (tree_kind == ModularOptions::TreeKind::kFalconACMeta) {
-    // All the data is 0 except the quant field. TODO(veluca): make that 0 too.
-    return {PropertyDecisionNode::Leaf(Predictor::Left)};
-  }
-  if (tree_kind == ModularOptions::TreeKind::kACMeta) {
-    // Small image.
-    if (total_pixels < 1024) {
-      return {PropertyDecisionNode::Leaf(Predictor::Left)};
-    }
-    Tree tree;
-    // 0: c > 1
-    tree.push_back(PropertyDecisionNode::Split(0, 1, 1));
-    // 1: c > 2
-    tree.push_back(PropertyDecisionNode::Split(0, 2, 3));
-    // 2: c > 0
-    tree.push_back(PropertyDecisionNode::Split(0, 0, 5));
-    // 3: EPF control field (all 0 or 4), top > 0
-    tree.push_back(PropertyDecisionNode::Split(6, 0, 21));
-    // 4: ACS+QF, y > 0
-    tree.push_back(PropertyDecisionNode::Split(2, 0, 7));
-    // 5: CfL x
-    tree.push_back(PropertyDecisionNode::Leaf(Predictor::Gradient));
-    // 6: CfL b
-    tree.push_back(PropertyDecisionNode::Leaf(Predictor::Gradient));
-    // 7: QF: split according to the left quant value.
-    tree.push_back(PropertyDecisionNode::Split(7, 5, 9));
-    // 8: ACS: split in 4 segments (8x8 from 0 to 3, large square 4-5, large
-    // rectangular 6-11, 8x8 12+), according to previous ACS value.
-    tree.push_back(PropertyDecisionNode::Split(7, 5, 15));
-    // QF
-    tree.push_back(PropertyDecisionNode::Split(7, 11, 11));
-    tree.push_back(PropertyDecisionNode::Split(7, 3, 13));
-    tree.push_back(PropertyDecisionNode::Leaf(Predictor::Left));
-    tree.push_back(PropertyDecisionNode::Leaf(Predictor::Left));
-    tree.push_back(PropertyDecisionNode::Leaf(Predictor::Left));
-    tree.push_back(PropertyDecisionNode::Leaf(Predictor::Left));
-    // ACS
-    tree.push_back(PropertyDecisionNode::Split(7, 11, 17));
-    tree.push_back(PropertyDecisionNode::Split(7, 3, 19));
-    tree.push_back(PropertyDecisionNode::Leaf(Predictor::Zero));
-    tree.push_back(PropertyDecisionNode::Leaf(Predictor::Zero));
-    tree.push_back(PropertyDecisionNode::Leaf(Predictor::Zero));
-    tree.push_back(PropertyDecisionNode::Leaf(Predictor::Zero));
-    // EPF, left > 0
-    tree.push_back(PropertyDecisionNode::Split(7, 0, 23));
-    tree.push_back(PropertyDecisionNode::Split(7, 0, 25));
-    tree.push_back(PropertyDecisionNode::Leaf(Predictor::Zero));
-    tree.push_back(PropertyDecisionNode::Leaf(Predictor::Zero));
-    tree.push_back(PropertyDecisionNode::Leaf(Predictor::Zero));
-    tree.push_back(PropertyDecisionNode::Leaf(Predictor::Zero));
-    return tree;
-  }
-  if (tree_kind == ModularOptions::TreeKind::kWPFixedDC) {
-    std::vector<int32_t> cutoffs = {
-        -500, -392, -255, -191, -127, -95, -63, -47, -31, -23, -15,
-        -11,  -7,   -4,   -3,   -1,   0,   1,   3,   5,   7,   11,
-        15,   23,   31,   47,   63,   95,  127, 191, 255, 392, 500};
-    return MakeFixedTree(kWPProp, cutoffs, Predictor::Weighted, total_pixels);
-  }
-  if (tree_kind == ModularOptions::TreeKind::kGradientFixedDC) {
-    std::vector<int32_t> cutoffs = {
-        -500, -392, -255, -191, -127, -95, -63, -47, -31, -23, -15,
-        -11,  -7,   -4,   -3,   -1,   0,   1,   3,   5,   7,   11,
-        15,   23,   31,   47,   63,   95,  127, 191, 255, 392, 500};
-    return MakeFixedTree(kGradientProp, cutoffs, Predictor::Gradient,
-                         total_pixels);
-  }
-  JXL_UNREACHABLE("Unreachable");
-  return {};
-}
 
 // Merges the trees in `trees` using nodes that decide on stream_id, as defined
 // by `tree_splits`.
@@ -248,7 +139,8 @@ Status float_to_int(const float* const row_in, pixel_type* const row_out,
   }
   if (bits == 32 && fp) {
     JXL_ASSERT(exp_bits == 8);
-    memcpy((void*)row_out, (const void*)row_in, 4 * xsize);
+    memcpy(static_cast<void*>(row_out), static_cast<const void*>(row_in),
+           4 * xsize);
     return true;
   }
 
@@ -295,14 +187,15 @@ Status float_to_int(const float* const row_in, pixel_type* const row_out,
     f = (signbit ? sign : 0);
     f |= (exp << mant_bits);
     f |= mantissa;
-    row_out[x] = (pixel_type)f;
+    row_out[x] = static_cast<pixel_type>(f);
   }
   return true;
 }
 }  // namespace
 
 ModularFrameEncoder::ModularFrameEncoder(const FrameHeader& frame_header,
-                                         const CompressParams& cparams_orig)
+                                         const CompressParams& cparams_orig,
+                                         bool streaming_mode)
     : frame_dim_(frame_header.ToFrameDimensions()), cparams_(cparams_orig) {
   size_t num_streams =
       ModularStreamId::Num(frame_dim_, frame_header.passes.num_passes);
@@ -362,10 +255,16 @@ ModularFrameEncoder::ModularFrameEncoder(const FrameHeader& frame_header,
       // Same, but for the non-Squeeze case.
       prop_order = {0, 1, 15, 9, 10, 11, 12, 13, 14, 2, 3, 4, 5, 6, 7, 8};
       // if few groups, don't use group as a property
-      if (num_streams < 30 && cparams_.speed_tier > SpeedTier::kTortoise) {
+      if (num_streams < 30 && cparams_.speed_tier > SpeedTier::kTortoise &&
+          cparams_orig.ModularPartIsLossless()) {
         prop_order.erase(prop_order.begin() + 1);
       }
     }
+    int max_properties = std::min<int>(
+        cparams_.options.max_properties,
+        static_cast<int>(
+            frame_header.nonserialized_metadata->m.num_extra_channels) +
+            (frame_header.encoding == FrameEncoding::kModular ? 2 : -1));
     switch (cparams_.speed_tier) {
       case SpeedTier::kHare:
         cparams_.options.splitting_heuristics_properties.assign(
@@ -387,6 +286,7 @@ ModularFrameEncoder::ModularFrameEncoder(const FrameHeader& frame_header,
             prop_order.begin(), prop_order.begin() + 10);
         cparams_.options.max_property_values = 96;
         break;
+      case SpeedTier::kGlacier:
       case SpeedTier::kTortoise:
         cparams_.options.splitting_heuristics_properties = prop_order;
         cparams_.options.max_property_values = 256;
@@ -399,22 +299,34 @@ ModularFrameEncoder::ModularFrameEncoder(const FrameHeader& frame_header,
     }
     if (cparams_.speed_tier > SpeedTier::kTortoise) {
       // Gradient in previous channels.
-      for (int i = 0; i < cparams_.options.max_properties; i++) {
+      for (int i = 0; i < max_properties; i++) {
         cparams_.options.splitting_heuristics_properties.push_back(
             kNumNonrefProperties + i * 4 + 3);
       }
     } else {
       // All the extra properties in Tortoise mode.
-      for (int i = 0; i < cparams_.options.max_properties * 4; i++) {
+      for (int i = 0; i < max_properties * 4; i++) {
         cparams_.options.splitting_heuristics_properties.push_back(
             kNumNonrefProperties + i);
       }
     }
   }
 
+  if ((cparams_.options.predictor == Predictor::Average0 ||
+       cparams_.options.predictor == Predictor::Average1 ||
+       cparams_.options.predictor == Predictor::Average2 ||
+       cparams_.options.predictor == Predictor::Average3 ||
+       cparams_.options.predictor == Predictor::Average4 ||
+       cparams_.options.predictor == Predictor::Weighted) &&
+      !cparams_.ModularPartIsLossless()) {
+    // Lossy + Average/Weighted predictors does not work, so switch to default
+    // predictors.
+    cparams_.options.predictor = static_cast<Predictor>(-1);
+  }
+
   if (cparams_.options.predictor == static_cast<Predictor>(-1)) {
     // no explicit predictor(s) given, set a good default
-    if ((cparams_.speed_tier <= SpeedTier::kTortoise ||
+    if ((cparams_.speed_tier <= SpeedTier::kGlacier ||
          cparams_.modular_mode == false) &&
         cparams_.IsLossless() && cparams_.responsive == false) {
       // TODO(veluca): allow all predictors that don't break residual
@@ -463,6 +375,15 @@ ModularFrameEncoder::ModularFrameEncoder(const FrameHeader& frame_header,
 
   // TODO(veluca): figure out how to use different predictor sets per channel.
   stream_options_.resize(num_streams, cparams_.options);
+
+  stream_options_[0] = cparams_.options;
+  if (cparams_.speed_tier == SpeedTier::kFalcon) {
+    stream_options_[0].tree_kind = ModularOptions::TreeKind::kWPFixedDC;
+  } else if (cparams_.speed_tier == SpeedTier::kThunder) {
+    stream_options_[0].tree_kind = ModularOptions::TreeKind::kGradientFixedDC;
+  }
+  stream_options_[0].histogram_params =
+      HistogramParams::ForModular(cparams_, {}, streaming_mode);
 }
 
 bool do_transform(Image& image, const Transform& tr,
@@ -482,29 +403,40 @@ bool do_transform(Image& image, const Transform& tr,
 Status ModularFrameEncoder::ComputeEncodingData(
     const FrameHeader& frame_header, const ImageMetadata& metadata,
     Image3F* JXL_RESTRICT color, const std::vector<ImageF>& extra_channels,
-    PassesEncoderState* JXL_RESTRICT enc_state, const JxlCmsInterface& cms,
-    ThreadPool* pool, AuxOut* aux_out, bool do_color) {
+    const Rect& group_rect, const FrameDimensions& patch_dim,
+    const Rect& frame_area_rect, PassesEncoderState* JXL_RESTRICT enc_state,
+    const JxlCmsInterface& cms, ThreadPool* pool, AuxOut* aux_out,
+    bool do_color) {
   JXL_DEBUG_V(6, "Computing modular encoding data for frame %s",
               frame_header.DebugString().c_str());
 
-  if (do_color && frame_header.loop_filter.gab) {
+  bool groupwise = enc_state->streaming_mode;
+
+  if (do_color && frame_header.loop_filter.gab && !groupwise) {
     float w = 0.9908511000000001f;
     float weights[3] = {w, w, w};
-    GaborishInverse(color, weights, pool);
+    JXL_RETURN_IF_ERROR(GaborishInverse(color, Rect(*color), weights, pool));
   }
 
   if (do_color && metadata.bit_depth.bits_per_sample <= 16 &&
       cparams_.speed_tier < SpeedTier::kCheetah &&
-      cparams_.decoding_speed_tier < 2) {
-    FindBestPatchDictionary(*color, enc_state, cms, nullptr, aux_out,
-                            cparams_.color_transform == ColorTransform::kXYB);
+      cparams_.decoding_speed_tier < 2 && !groupwise) {
+    JXL_RETURN_IF_ERROR(FindBestPatchDictionary(
+        *color, enc_state, cms, nullptr, aux_out,
+        cparams_.color_transform == ColorTransform::kXYB));
     PatchDictionaryEncoder::SubtractFrom(
         enc_state->shared.image_features.patches, color);
   }
 
+  if (cparams_.custom_splines.HasAny()) {
+    PassesSharedState& shared = enc_state->shared;
+    ImageFeatures& image_features = shared.image_features;
+    image_features.splines = cparams_.custom_splines;
+  }
+
   // Convert ImageBundle to modular Image object
-  const size_t xsize = frame_dim_.xsize;
-  const size_t ysize = frame_dim_.ysize;
+  const size_t xsize = patch_dim.xsize;
+  const size_t ysize = patch_dim.ysize;
 
   int nb_chans = 3;
   if (metadata.color_encoding.IsGray() &&
@@ -532,7 +464,9 @@ Status ModularFrameEncoder::ComputeEncodingData(
   int max_bitdepth =
       do_color ? metadata.bit_depth.bits_per_sample + (fp ? 0 : 1) : 0;
   Image& gi = stream_images_[0];
-  gi = Image(xsize, ysize, metadata.bit_depth.bits_per_sample, nb_chans);
+  JXL_ASSIGN_OR_RETURN(
+      gi, Image::Create(xsize, ysize, metadata.bit_depth.bits_per_sample,
+                        nb_chans));
   int c = 0;
   if (cparams_.color_transform == ColorTransform::kXYB &&
       cparams_.modular_mode == true) {
@@ -583,23 +517,25 @@ Status ModularFrameEncoder::ComputeEncodingData(
       } else {
         int bits = metadata.bit_depth.bits_per_sample;
         int exp_bits = metadata.bit_depth.exponent_bits_per_sample;
-        gi.channel[c_out].hshift =
-            enc_state->shared.frame_header.chroma_subsampling.HShift(c);
-        gi.channel[c_out].vshift =
-            enc_state->shared.frame_header.chroma_subsampling.VShift(c);
+        gi.channel[c_out].hshift = frame_header.chroma_subsampling.HShift(c);
+        gi.channel[c_out].vshift = frame_header.chroma_subsampling.VShift(c);
         size_t xsize_shifted = DivCeil(xsize, 1 << gi.channel[c_out].hshift);
         size_t ysize_shifted = DivCeil(ysize, 1 << gi.channel[c_out].vshift);
-        gi.channel[c_out].shrink(xsize_shifted, ysize_shifted);
+        JXL_RETURN_IF_ERROR(
+            gi.channel[c_out].shrink(xsize_shifted, ysize_shifted));
         std::atomic<bool> has_error{false};
         JXL_RETURN_IF_ERROR(RunOnPool(
             pool, 0, ysize_shifted, ThreadPool::NoInit,
             [&](const int task, const int thread) {
+              if (has_error) return;
               const size_t y = task;
-              const float* const JXL_RESTRICT row_in = color->PlaneRow(c, y);
+              const float* const JXL_RESTRICT row_in =
+                  color->PlaneRow(c, y + group_rect.y0()) + group_rect.x0();
               pixel_type* const JXL_RESTRICT row_out = gi.channel[c_out].Row(y);
               if (!float_to_int(row_in, row_out, xsize_shifted, bits, exp_bits,
                                 fp, factor)) {
                 has_error = true;
+                return;
               };
             },
             "float2int"));
@@ -616,8 +552,9 @@ Status ModularFrameEncoder::ComputeEncodingData(
   for (size_t ec = 0; ec < extra_channels.size(); ec++, c++) {
     const ExtraChannelInfo& eci = metadata.extra_channel_info[ec];
     size_t ecups = frame_header.extra_channel_upsampling[ec];
-    gi.channel[c].shrink(DivCeil(frame_dim_.xsize_upsampled, ecups),
-                         DivCeil(frame_dim_.ysize_upsampled, ecups));
+    JXL_RETURN_IF_ERROR(
+        gi.channel[c].shrink(DivCeil(patch_dim.xsize_upsampled, ecups),
+                             DivCeil(patch_dim.ysize_upsampled, ecups)));
     gi.channel[c].hshift = gi.channel[c].vshift =
         CeilLog2Nonzero(ecups) - CeilLog2Nonzero(frame_header.upsampling);
 
@@ -630,12 +567,15 @@ Status ModularFrameEncoder::ComputeEncodingData(
     JXL_RETURN_IF_ERROR(RunOnPool(
         pool, 0, gi.channel[c].plane.ysize(), ThreadPool::NoInit,
         [&](const int task, const int thread) {
+          if (has_error) return;
           const size_t y = task;
-          const float* const JXL_RESTRICT row_in = extra_channels[ec].Row(y);
+          const float* const JXL_RESTRICT row_in =
+              extra_channels[ec].Row(y + group_rect.y0()) + group_rect.x0();
           pixel_type* const JXL_RESTRICT row_out = gi.channel[c].Row(y);
           if (!float_to_int(row_in, row_out, gi.channel[c].plane.xsize(), bits,
                             exp_bits, fp, factor)) {
             has_error = true;
+            return;
           };
         },
         "float2int"));
@@ -644,11 +584,12 @@ Status ModularFrameEncoder::ComputeEncodingData(
   JXL_ASSERT(c == nb_chans);
 
   int level_max_bitdepth = (cparams_.level == 5 ? 16 : 32);
-  if (max_bitdepth > level_max_bitdepth)
+  if (max_bitdepth > level_max_bitdepth) {
     return JXL_FAILURE(
         "Bitdepth too high for level %i (need %i bits, have only %i in this "
         "level)",
         cparams_.level, max_bitdepth, level_max_bitdepth);
+  }
 
   // Set options and apply transformations
   if (!cparams_.ModularPartIsLossless()) {
@@ -664,14 +605,14 @@ Status ModularFrameEncoder::ComputeEncodingData(
   }
 
   // Global palette
-  if (cparams_.palette_colors != 0 || cparams_.lossy_palette) {
+  if ((cparams_.palette_colors != 0 || cparams_.lossy_palette) && !groupwise) {
     // all-channel palette (e.g. RGBA)
     if (gi.channel.size() - gi.nb_meta_channels > 1) {
       Transform maybe_palette(TransformId::kPalette);
       maybe_palette.begin_c = gi.nb_meta_channels;
       maybe_palette.num_c = gi.channel.size() - gi.nb_meta_channels;
-      maybe_palette.nb_colors =
-          std::min((int)(xsize * ysize / 2), std::abs(cparams_.palette_colors));
+      maybe_palette.nb_colors = std::min(static_cast<int>(xsize * ysize / 2),
+                                         std::abs(cparams_.palette_colors));
       maybe_palette.ordered_palette = cparams_.palette_colors >= 0;
       maybe_palette.lossy_palette =
           (cparams_.lossy_palette && maybe_palette.num_c == 3);
@@ -689,8 +630,8 @@ Status ModularFrameEncoder::ComputeEncodingData(
       Transform maybe_palette_3(TransformId::kPalette);
       maybe_palette_3.begin_c = gi.nb_meta_channels;
       maybe_palette_3.num_c = gi.channel.size() - gi.nb_meta_channels - 1;
-      maybe_palette_3.nb_colors =
-          std::min((int)(xsize * ysize / 3), std::abs(cparams_.palette_colors));
+      maybe_palette_3.nb_colors = std::min(static_cast<int>(xsize * ysize / 3),
+                                           std::abs(cparams_.palette_colors));
       maybe_palette_3.ordered_palette = cparams_.palette_colors >= 0;
       maybe_palette_3.lossy_palette = cparams_.lossy_palette;
       if (maybe_palette_3.lossy_palette) {
@@ -702,7 +643,7 @@ Status ModularFrameEncoder::ComputeEncodingData(
   }
 
   // Global channel palette
-  if (cparams_.channel_colors_pre_transform_percent > 0 &&
+  if (!groupwise && cparams_.channel_colors_pre_transform_percent > 0 &&
       !cparams_.lossy_palette &&
       (cparams_.speed_tier <= SpeedTier::kThunder ||
        (do_color && metadata.bit_depth.bits_per_sample > 8))) {
@@ -711,9 +652,10 @@ Status ModularFrameEncoder::ComputeEncodingData(
     int orig_bitdepth = max_bitdepth;
     max_bitdepth = 0;
     for (size_t i = 0; i < nb_channels; i++) {
-      int32_t min, max;
+      int32_t min;
+      int32_t max;
       compute_minmax(gi.channel[gi.nb_meta_channels + i], &min, &max);
-      int64_t colors = (int64_t)max - min + 1;
+      int64_t colors = static_cast<int64_t>(max) - min + 1;
       JXL_DEBUG_V(10, "Channel %" PRIuS ": range=%i..%i", i, min, max);
       Transform maybe_palette_1(TransformId::kPalette);
       maybe_palette_1.begin_c = i + gi.nb_meta_channels;
@@ -723,8 +665,9 @@ Status ModularFrameEncoder::ComputeEncodingData(
       // (but only if the channel palette is less than 6% the size of the
       // image itself)
       maybe_palette_1.nb_colors = std::min(
-          (int)(xsize * ysize / 16),
-          (int)(cparams_.channel_colors_pre_transform_percent / 100. * colors));
+          static_cast<int>(xsize * ysize / 16),
+          static_cast<int>(cparams_.channel_colors_pre_transform_percent /
+                           100. * colors));
       if (do_transform(gi, maybe_palette_1, weighted::Header(), pool)) {
         // effective bit depth is lower, adjust quantization accordingly
         compute_minmax(gi.channel[gi.nb_meta_channels + i], &min, &max);
@@ -757,11 +700,30 @@ Status ModularFrameEncoder::ComputeEncodingData(
     }
   }
 
+  if (cparams_.move_to_front_from_channel > 0) {
+    for (size_t tgt = 0;
+         tgt + cparams_.move_to_front_from_channel < gi.channel.size(); tgt++) {
+      size_t pos = cparams_.move_to_front_from_channel;
+      while (pos > 0) {
+        Transform move(TransformId::kRCT);
+        if (pos == 1) {
+          move.begin_c = tgt;
+          move.rct_type = 28;  // RGB -> GRB
+          pos -= 1;
+        } else {
+          move.begin_c = tgt + pos - 2;
+          move.rct_type = 14;  // RGB -> BRG
+          pos -= 2;
+        }
+        do_transform(gi, move, weighted::Header(), pool);
+      }
+    }
+  }
+
   // don't do squeeze if we don't have some spare bits
-  if (cparams_.responsive && !gi.channel.empty() &&
+  if (!groupwise && cparams_.responsive && !gi.channel.empty() &&
       max_bitdepth + 2 < level_max_bitdepth) {
     Transform t(TransformId::kSqueeze);
-    t.squeezes = cparams_.squeezes;
     do_transform(gi, t, weighted::Header(), pool);
     max_bitdepth += 2;
   }
@@ -772,10 +734,8 @@ Status ModularFrameEncoder::ComputeEncodingData(
   }
   JXL_ASSERT(max_bitdepth <= level_max_bitdepth);
 
-  std::vector<uint32_t> quants;
-
   if (!cparams_.ModularPartIsLossless()) {
-    quants.resize(gi.channel.size(), 1);
+    quants_.resize(gi.channel.size(), 1);
     float quantizer = 0.25f;
     if (!cparams_.responsive) {
       JXL_DEBUG_V(1,
@@ -788,8 +748,8 @@ Status ModularFrameEncoder::ComputeEncodingData(
       bitdepth_correction = maxval / 255.f;
     }
     std::vector<float> quantizers;
-    float dist = cparams_.butteraugli_distance;
     for (size_t i = 0; i < 3; i++) {
+      float dist = cparams_.butteraugli_distance;
       quantizers.push_back(quantizer * dist * bitdepth_correction);
     }
     for (size_t i = 0; i < extra_channels.size(); i++) {
@@ -797,6 +757,7 @@ Status ModularFrameEncoder::ComputeEncodingData(
           metadata.extra_channel_info[i].bit_depth.bits_per_sample;
       pixel_type ec_maxval = ec_bitdepth < 32 ? (1u << ec_bitdepth) - 1 : 0;
       bitdepth_correction = ec_maxval / 255.f;
+      float dist = 0;
       if (i < cparams_.ec_distance.size()) dist = cparams_.ec_distance[i];
       if (dist < 0) dist = cparams_.butteraugli_distance;
       quantizers.push_back(quantizer * dist * bitdepth_correction);
@@ -831,62 +792,61 @@ Status ModularFrameEncoder::ComputeEncodingData(
       }
       if (q < 1) q = 1;
       QuantizeChannel(gi.channel[i], q);
-      quants[i] = q;
+      quants_[i] = q;
     }
   }
 
   // Fill other groups.
-  struct GroupParams {
-    Rect rect;
-    int minShift;
-    int maxShift;
-    ModularStreamId id;
-  };
-  std::vector<GroupParams> stream_params;
-
-  stream_options_[0] = cparams_.options;
-
   // DC
-  for (size_t group_id = 0; group_id < frame_dim_.num_dc_groups; group_id++) {
-    const size_t gx = group_id % frame_dim_.xsize_dc_groups;
-    const size_t gy = group_id / frame_dim_.xsize_dc_groups;
-    const Rect rect(gx * frame_dim_.dc_group_dim, gy * frame_dim_.dc_group_dim,
-                    frame_dim_.dc_group_dim, frame_dim_.dc_group_dim);
+  for (size_t group_id = 0; group_id < patch_dim.num_dc_groups; group_id++) {
+    const size_t rgx = group_id % patch_dim.xsize_dc_groups;
+    const size_t rgy = group_id / patch_dim.xsize_dc_groups;
+    const Rect rect(rgx * patch_dim.dc_group_dim, rgy * patch_dim.dc_group_dim,
+                    patch_dim.dc_group_dim, patch_dim.dc_group_dim);
+    size_t gx = rgx + frame_area_rect.x0() / 2048;
+    size_t gy = rgy + frame_area_rect.y0() / 2048;
+    size_t real_group_id = gy * frame_dim_.xsize_dc_groups + gx;
     // minShift==3 because (frame_dim.dc_group_dim >> 3) == frame_dim.group_dim
     // maxShift==1000 is infinity
-    stream_params.push_back(
-        GroupParams{rect, 3, 1000, ModularStreamId::ModularDC(group_id)});
+    stream_params_.push_back(
+        GroupParams{rect, 3, 1000, ModularStreamId::ModularDC(real_group_id)});
   }
   // AC global -> nothing.
   // AC
-  for (size_t group_id = 0; group_id < frame_dim_.num_groups; group_id++) {
-    const size_t gx = group_id % frame_dim_.xsize_groups;
-    const size_t gy = group_id / frame_dim_.xsize_groups;
-    const Rect mrect(gx * frame_dim_.group_dim, gy * frame_dim_.group_dim,
-                     frame_dim_.group_dim, frame_dim_.group_dim);
+  for (size_t group_id = 0; group_id < patch_dim.num_groups; group_id++) {
+    const size_t rgx = group_id % patch_dim.xsize_groups;
+    const size_t rgy = group_id / patch_dim.xsize_groups;
+    const Rect mrect(rgx * patch_dim.group_dim, rgy * patch_dim.group_dim,
+                     patch_dim.group_dim, patch_dim.group_dim);
+    size_t gx = rgx + frame_area_rect.x0() / (frame_dim_.group_dim);
+    size_t gy = rgy + frame_area_rect.y0() / (frame_dim_.group_dim);
+    size_t real_group_id = gy * frame_dim_.xsize_groups + gx;
     for (size_t i = 0; i < enc_state->progressive_splitter.GetNumPasses();
          i++) {
-      int maxShift, minShift;
+      int maxShift;
+      int minShift;
       frame_header.passes.GetDownsamplingBracket(i, minShift, maxShift);
-      stream_params.push_back(GroupParams{
-          mrect, minShift, maxShift, ModularStreamId::ModularAC(group_id, i)});
+      stream_params_.push_back(
+          GroupParams{mrect, minShift, maxShift,
+                      ModularStreamId::ModularAC(real_group_id, i)});
     }
   }
   // if there's only one group, everything ends up in GlobalModular
   // in that case, also try RCTs/WP params for the one group
-  if (stream_params.size() == 2) {
-    stream_params.push_back(GroupParams{Rect(0, 0, xsize, ysize), 0, 1000,
-                                        ModularStreamId::Global()});
+  if (stream_params_.size() == 2) {
+    stream_params_.push_back(GroupParams{Rect(0, 0, xsize, ysize), 0, 1000,
+                                         ModularStreamId::Global()});
   }
   gi_channel_.resize(stream_images_.size());
 
   JXL_RETURN_IF_ERROR(RunOnPool(
-      pool, 0, stream_params.size(), ThreadPool::NoInit,
+      pool, 0, stream_params_.size(), ThreadPool::NoInit,
       [&](const uint32_t i, size_t /* thread */) {
-        stream_options_[stream_params[i].id.ID(frame_dim_)] = cparams_.options;
+        size_t stream = stream_params_[i].id.ID(frame_dim_);
+        stream_options_[stream] = stream_options_[0];
         JXL_CHECK(PrepareStreamParams(
-            stream_params[i].rect, cparams_, stream_params[i].minShift,
-            stream_params[i].maxShift, stream_params[i].id, do_color));
+            stream_params_[i].rect, cparams_, stream_params_[i].minShift,
+            stream_params_[i].maxShift, stream_params_[i].id, do_color));
       },
       "ChooseParams"));
   {
@@ -902,7 +862,13 @@ Status ModularFrameEncoder::ComputeEncodingData(
     }
   }
 
-  if (!quants.empty()) {
+  JXL_RETURN_IF_ERROR(ValidateChannelDimensions(gi, stream_options_[0]));
+  return true;
+}
+
+Status ModularFrameEncoder::ComputeTree(ThreadPool* pool) {
+  std::vector<ModularMultiplierInfo> multiplier_info;
+  if (!quants_.empty()) {
     for (uint32_t stream_id = 0; stream_id < stream_images_.size();
          stream_id++) {
       // skip non-modular stream_ids
@@ -919,65 +885,48 @@ Status ModularFrameEncoder::ComputeEncodingData(
         size_t ch_id = stream_id == 0
                            ? i
                            : gi_channel_[stream_id][i - image.nb_meta_channels];
-        uint32_t q = quants[ch_id];
+        uint32_t q = quants_[ch_id];
         // Inform the tree splitting heuristics that each channel in each group
         // used this quantization factor. This will produce a tree with the
         // given multipliers.
-        if (multiplier_info_.empty() ||
-            multiplier_info_.back().range[1][0] != stream_id ||
-            multiplier_info_.back().multiplier != q) {
+        if (multiplier_info.empty() ||
+            multiplier_info.back().range[1][0] != stream_id ||
+            multiplier_info.back().multiplier != q) {
           StaticPropRange range;
           range[0] = {{i, i + 1}};
           range[1] = {{stream_id, stream_id + 1}};
-          multiplier_info_.push_back({range, (uint32_t)q});
+          multiplier_info.push_back({range, static_cast<uint32_t>(q)});
         } else {
           // Previous channel in the same group had the same quantization
           // factor. Don't provide two different ranges, as that creates
           // unnecessary nodes.
-          multiplier_info_.back().range[0][1] = i + 1;
+          multiplier_info.back().range[0][1] = i + 1;
         }
       }
     }
     // Merge group+channel settings that have the same channels and quantization
     // factors, to avoid unnecessary nodes.
-    std::sort(multiplier_info_.begin(), multiplier_info_.end(),
+    std::sort(multiplier_info.begin(), multiplier_info.end(),
               [](ModularMultiplierInfo a, ModularMultiplierInfo b) {
                 return std::make_tuple(a.range, a.multiplier) <
                        std::make_tuple(b.range, b.multiplier);
               });
     size_t new_num = 1;
-    for (size_t i = 1; i < multiplier_info_.size(); i++) {
-      ModularMultiplierInfo& prev = multiplier_info_[new_num - 1];
-      ModularMultiplierInfo& cur = multiplier_info_[i];
+    for (size_t i = 1; i < multiplier_info.size(); i++) {
+      ModularMultiplierInfo& prev = multiplier_info[new_num - 1];
+      ModularMultiplierInfo& cur = multiplier_info[i];
       if (prev.range[0] == cur.range[0] && prev.multiplier == cur.multiplier &&
           prev.range[1][1] == cur.range[1][0]) {
         prev.range[1][1] = cur.range[1][1];
       } else {
-        multiplier_info_[new_num++] = multiplier_info_[i];
+        multiplier_info[new_num++] = multiplier_info[i];
       }
     }
-    multiplier_info_.resize(new_num);
+    multiplier_info.resize(new_num);
   }
 
-  JXL_RETURN_IF_ERROR(ValidateChannelDimensions(gi, stream_options_[0]));
-
-  return PrepareEncoding(frame_header, pool, enc_state->heuristics.get(),
-                         aux_out);
-}
-
-Status ModularFrameEncoder::PrepareEncoding(const FrameHeader& frame_header,
-                                            ThreadPool* pool,
-                                            EncoderHeuristics* heuristics,
-                                            AuxOut* aux_out) {
-  if (!tree_.empty()) return true;
-
-  // Compute tree.
-  size_t num_streams = stream_images_.size();
-  stream_headers_.resize(num_streams);
-  tokens_.resize(num_streams);
-
-  if (heuristics->CustomFixedTreeLossless(frame_dim_, &tree_)) {
-    // Using a fixed tree.
+  if (!cparams_.custom_fixed_tree.empty()) {
+    tree_ = cparams_.custom_fixed_tree;
   } else if (cparams_.speed_tier < SpeedTier::kFalcon ||
              !cparams_.modular_mode) {
     // Avoid creating a tree with leaves that don't correspond to any pixels.
@@ -1010,7 +959,6 @@ Status ModularFrameEncoder::PrepareEncoding(const FrameHeader& frame_header,
           uint32_t stop = useful_splits[chunk + 1];
           while (start < stop && stream_images_[start].empty()) ++start;
           while (start < stop && stream_images_[stop - 1].empty()) --stop;
-          uint32_t max_c = 0;
           if (stream_options_[start].tree_kind !=
               ModularOptions::TreeKind::kLearn) {
             for (size_t i = start; i < stop; i++) {
@@ -1034,6 +982,7 @@ Status ModularFrameEncoder::PrepareEncoding(const FrameHeader& frame_header,
             invalid_force_wp.test_and_set(std::memory_order_acq_rel);
             return;
           }
+          uint32_t max_c = 0;
           std::vector<pixel_type> pixel_samples;
           std::vector<pixel_type> diff_samples;
           std::vector<uint32_t> group_pixel_count;
@@ -1047,7 +996,7 @@ Status ModularFrameEncoder::PrepareEncoding(const FrameHeader& frame_header,
           StaticPropRange range;
           range[0] = {{0, max_c}};
           range[1] = {{start, stop}};
-          auto local_multiplier_info = multiplier_info_;
+          auto local_multiplier_info = multiplier_info;
 
           tree_samples.PreQuantizeProperties(
               range, local_multiplier_info, group_pixel_count,
@@ -1091,7 +1040,7 @@ Status ModularFrameEncoder::PrepareEncoding(const FrameHeader& frame_header,
   tree_tokens_.resize(1);
   tree_tokens_[0].clear();
   Tree decoded_tree;
-  TokenizeTree(tree_, &tree_tokens_[0], &decoded_tree);
+  TokenizeTree(tree_, tree_tokens_.data(), &decoded_tree);
   JXL_ASSERT(tree_.size() == decoded_tree.size());
   tree_ = std::move(decoded_tree);
 
@@ -1104,7 +1053,13 @@ Status ModularFrameEncoder::PrepareEncoding(const FrameHeader& frame_header,
       PrintTree(tree_, aux_out->debug_prefix + "/global_tree");
     }
   } */
+  return true;
+}
 
+Status ModularFrameEncoder::ComputeTokens(ThreadPool* pool) {
+  size_t num_streams = stream_images_.size();
+  stream_headers_.resize(num_streams);
+  tokens_.resize(num_streams);
   image_widths_.resize(num_streams);
   JXL_RETURN_IF_ERROR(RunOnPool(
       pool, 0, num_streams, ThreadPool::NoInit,
@@ -1124,7 +1079,8 @@ Status ModularFrameEncoder::PrepareEncoding(const FrameHeader& frame_header,
   return true;
 }
 
-Status ModularFrameEncoder::EncodeGlobalInfo(BitWriter* writer,
+Status ModularFrameEncoder::EncodeGlobalInfo(bool streaming_mode,
+                                             BitWriter* writer,
                                              AuxOut* aux_out) {
   BitWriter::Allotment allotment(writer, 1);
   // If we are using brotli, or not using modular mode.
@@ -1137,50 +1093,19 @@ Status ModularFrameEncoder::EncodeGlobalInfo(BitWriter* writer,
   allotment.ReclaimAndCharge(writer, kLayerModularTree, aux_out);
 
   // Write tree
-  HistogramParams params;
-  if (cparams_.speed_tier > SpeedTier::kKitten) {
-    params.clustering = HistogramParams::ClusteringType::kFast;
-    params.ans_histogram_strategy =
-        cparams_.speed_tier > SpeedTier::kThunder
-            ? HistogramParams::ANSHistogramStrategy::kFast
-            : HistogramParams::ANSHistogramStrategy::kApproximate;
-    params.lz77_method =
-        cparams_.decoding_speed_tier >= 3 && cparams_.modular_mode
-            ? (cparams_.speed_tier >= SpeedTier::kFalcon
-                   ? HistogramParams::LZ77Method::kRLE
-                   : HistogramParams::LZ77Method::kLZ77)
-            : HistogramParams::LZ77Method::kNone;
-    // Near-lossless DC, as well as modular mode, require choosing hybrid uint
-    // more carefully.
-    if ((!extra_dc_precision.empty() && extra_dc_precision[0] != 0) ||
-        (cparams_.modular_mode && cparams_.speed_tier < SpeedTier::kCheetah)) {
-      params.uint_method = HistogramParams::HybridUintMethod::kFast;
-    } else {
-      params.uint_method = HistogramParams::HybridUintMethod::kNone;
-    }
-  } else if (cparams_.speed_tier <= SpeedTier::kTortoise) {
-    params.lz77_method = HistogramParams::LZ77Method::kOptimal;
-  } else {
-    params.lz77_method = HistogramParams::LZ77Method::kLZ77;
+  HistogramParams params =
+      HistogramParams::ForModular(cparams_, extra_dc_precision, streaming_mode);
+  {
+    EntropyEncodingData tree_code;
+    std::vector<uint8_t> tree_context_map;
+    BuildAndEncodeHistograms(params, kNumTreeContexts, tree_tokens_, &tree_code,
+                             &tree_context_map, writer, kLayerModularTree,
+                             aux_out);
+    WriteTokens(tree_tokens_[0], tree_code, tree_context_map, 0, writer,
+                kLayerModularTree, aux_out);
   }
-  if (cparams_.decoding_speed_tier >= 1) {
-    params.max_histograms = 12;
-  }
-  if (cparams_.decoding_speed_tier >= 1 && cparams_.responsive) {
-    params.lz77_method = cparams_.speed_tier >= SpeedTier::kCheetah
-                             ? HistogramParams::LZ77Method::kRLE
-                         : cparams_.speed_tier >= SpeedTier::kKitten
-                             ? HistogramParams::LZ77Method::kLZ77
-                             : HistogramParams::LZ77Method::kOptimal;
-  }
-  if (cparams_.decoding_speed_tier >= 2 && cparams_.responsive) {
-    params.uint_method = HistogramParams::HybridUintMethod::k000;
-    params.force_huffman = true;
-  }
-  BuildAndEncodeHistograms(params, kNumTreeContexts, tree_tokens_, &code_,
-                           &context_map_, writer, kLayerModularTree, aux_out);
-  WriteTokens(tree_tokens_[0], code_, context_map_, writer, kLayerModularTree,
-              aux_out);
+  params.streaming_mode = streaming_mode;
+  params.add_missing_symbols = streaming_mode;
   params.image_widths = image_widths_;
   // Write histograms.
   BuildAndEncodeHistograms(params, (tree_.size() + 1) / 2, tokens_, &code_,
@@ -1195,10 +1120,41 @@ Status ModularFrameEncoder::EncodeStream(BitWriter* writer, AuxOut* aux_out,
   if (stream_images_[stream_id].channel.empty()) {
     return true;  // Image with no channels, header never gets decoded.
   }
-  JXL_RETURN_IF_ERROR(
-      Bundle::Write(stream_headers_[stream_id], writer, layer, aux_out));
-  WriteTokens(tokens_[stream_id], code_, context_map_, writer, layer, aux_out);
+  if (tokens_.empty()) {
+    JXL_RETURN_IF_ERROR(ModularGenericCompress(
+        stream_images_[stream_id], stream_options_[stream_id], writer, aux_out,
+        layer, stream_id));
+  } else {
+    JXL_RETURN_IF_ERROR(
+        Bundle::Write(stream_headers_[stream_id], writer, layer, aux_out));
+    WriteTokens(tokens_[stream_id], code_, context_map_, 0, writer, layer,
+                aux_out);
+  }
   return true;
+}
+
+void ModularFrameEncoder::ClearStreamData(const ModularStreamId& stream) {
+  size_t stream_id = stream.ID(frame_dim_);
+  Image empty_image;
+  std::swap(stream_images_[stream_id], empty_image);
+}
+
+void ModularFrameEncoder::ClearModularStreamData() {
+  for (const auto& group : stream_params_) {
+    ClearStreamData(group.id);
+  }
+  stream_params_.clear();
+}
+
+size_t ModularFrameEncoder::ComputeStreamingAbsoluteAcGroupId(
+    size_t dc_group_id, size_t ac_group_id,
+    const FrameDimensions& patch_dim) const {
+  size_t dc_group_x = dc_group_id % frame_dim_.xsize_dc_groups;
+  size_t dc_group_y = dc_group_id / frame_dim_.xsize_dc_groups;
+  size_t ac_group_x = ac_group_id % patch_dim.xsize_groups;
+  size_t ac_group_y = ac_group_id / patch_dim.xsize_groups;
+  return (dc_group_x * 8 + ac_group_x) +
+         (dc_group_y * 8 + ac_group_y) * frame_dim_.xsize_groups;
 }
 
 namespace {
@@ -1236,7 +1192,9 @@ float EstimateWPCost(const Image& img, size_t i) {
           ctx += c >= properties[0];
         }
         pixel_type res = r[x] - guess;
-        uint32_t token, nbits, bits;
+        uint32_t token;
+        uint32_t nbits;
+        uint32_t bits;
         config.Encode(PackSigned(res), &token, &nbits, &bits);
         histo[ctx].Add(token);
         extra_bits += nbits;
@@ -1275,7 +1233,9 @@ float EstimateCost(const Image& img) {
           ctx += c > maxdiff;
         }
         pixel_type res = r[x] - ClampedGradient(top, left, topleft);
-        uint32_t token, nbits, bits;
+        uint32_t token;
+        uint32_t nbits;
+        uint32_t bits;
         config.Encode(PackSigned(res), &token, &nbits, &bits);
         histo[ctx].Add(token);
         extra_bits += nbits;
@@ -1302,7 +1262,8 @@ Status ModularFrameEncoder::PrepareStreamParams(const Rect& rect,
   const size_t ysize = rect.ysize();
   Image& gi = stream_images_[stream_id];
   if (stream_id > 0) {
-    gi = Image(xsize, ysize, full_image.bitdepth, 0);
+    JXL_ASSIGN_OR_RETURN(gi,
+                         Image::Create(xsize, ysize, full_image.bitdepth, 0));
     // start at the first bigger-than-frame_dim.group_dim non-metachannel
     size_t c = full_image.nb_meta_channels;
     for (; c < full_image.channel.size(); c++) {
@@ -1318,7 +1279,7 @@ Status ModularFrameEncoder::PrepareStreamParams(const Rect& rect,
              rect.xsize() >> fc.hshift, rect.ysize() >> fc.vshift, fc.w, fc.h);
       if (r.xsize() == 0 || r.ysize() == 0) continue;
       gi_channel_[stream_id].push_back(c);
-      Channel gc(r.xsize(), r.ysize());
+      JXL_ASSIGN_OR_RETURN(Channel gc, Channel::Create(r.xsize(), r.ysize()));
       gc.hshift = fc.hshift;
       gc.vshift = fc.vshift;
       for (size_t y = 0; y < r.ysize(); ++y) {
@@ -1369,9 +1330,10 @@ Status ModularFrameEncoder::PrepareStreamParams(const Rect& rect,
       // single channel palette (like FLIF's ChannelCompact)
       size_t nb_channels = gi.channel.size() - gi.nb_meta_channels;
       for (size_t i = 0; i < nb_channels; i++) {
-        int32_t min, max;
+        int32_t min;
+        int32_t max;
         compute_minmax(gi.channel[gi.nb_meta_channels + i], &min, &max);
-        int64_t colors = (int64_t)max - min + 1;
+        int64_t colors = static_cast<int64_t>(max) - min + 1;
         JXL_DEBUG_V(10, "Channel %" PRIuS ": range=%i..%i", i, min, max);
         Transform maybe_palette_1(TransformId::kPalette);
         maybe_palette_1.begin_c = i + gi.nb_meta_channels;
@@ -1380,9 +1342,9 @@ Status ModularFrameEncoder::PrepareStreamParams(const Rect& rect,
         // actually occur, it is probably worth it to do a compaction
         // (but only if the channel palette is less than 80% the size of the
         // image itself)
-        maybe_palette_1.nb_colors =
-            std::min((int)(xsize * ysize * 0.8),
-                     (int)(cparams_.channel_colors_percent / 100. * colors));
+        maybe_palette_1.nb_colors = std::min(
+            static_cast<int>(xsize * ysize * 0.8),
+            static_cast<int>(cparams_.channel_colors_percent / 100. * colors));
         do_transform(gi, maybe_palette_1, weighted::Header());
       }
     }
@@ -1417,6 +1379,7 @@ Status ModularFrameEncoder::PrepareStreamParams(const Rect& rect,
       case SpeedTier::kKitten:
         nb_rcts_to_try = 9;
         break;
+      case SpeedTier::kTectonicPlate:
       case SpeedTier::kGlacier:
       case SpeedTier::kTortoise:
         nb_rcts_to_try = 19;
@@ -1501,10 +1464,11 @@ int QuantizeGradient(const int32_t* qrow, size_t onerow, size_t c, size_t x,
   return residual + pred.guess;
 }
 
-void ModularFrameEncoder::AddVarDCTDC(const Image3F& dc, size_t group_index,
-                                      bool nl_dc, PassesEncoderState* enc_state,
-                                      bool jpeg_transcode) {
-  const Rect r = enc_state->shared.DCGroupRect(group_index);
+Status ModularFrameEncoder::AddVarDCTDC(const FrameHeader& frame_header,
+                                        const Image3F& dc, const Rect& r,
+                                        size_t group_index, bool nl_dc,
+                                        PassesEncoderState* enc_state,
+                                        bool jpeg_transcode) {
   extra_dc_precision[group_index] = nl_dc ? 1 : 0;
   float mul = 1 << extra_dc_precision[group_index];
 
@@ -1527,11 +1491,14 @@ void ModularFrameEncoder::AddVarDCTDC(const Image3F& dc, size_t group_index,
     stream_options_[stream_id].tree_kind =
         ModularOptions::TreeKind::kGradientFixedDC;
   }
+  stream_options_[stream_id].histogram_params =
+      stream_options_[0].histogram_params;
 
-  stream_images_[stream_id] = Image(r.xsize(), r.ysize(), 8, 3);
+  JXL_ASSIGN_OR_RETURN(stream_images_[stream_id],
+                       Image::Create(r.xsize(), r.ysize(), 8, 3));
   if (nl_dc && stream_options_[stream_id].tree_kind ==
                    ModularOptions::TreeKind::kGradientFixedDC) {
-    JXL_ASSERT(enc_state->shared.frame_header.chroma_subsampling.Is444());
+    JXL_ASSERT(frame_header.chroma_subsampling.Is444());
     for (size_t c : {1, 0, 2}) {
       float inv_factor = enc_state->shared.quantizer.GetInvDcStep(c) * mul;
       float y_factor = enc_state->shared.quantizer.GetDcStep(1) / mul;
@@ -1560,7 +1527,7 @@ void ModularFrameEncoder::AddVarDCTDC(const Image3F& dc, size_t group_index,
       }
     }
   } else if (nl_dc) {
-    JXL_ASSERT(enc_state->shared.frame_header.chroma_subsampling.Is444());
+    JXL_ASSERT(frame_header.chroma_subsampling.Is444());
     for (size_t c : {1, 0, 2}) {
       float inv_factor = enc_state->shared.quantizer.GetInvDcStep(c) * mul;
       float y_factor = enc_state->shared.quantizer.GetDcStep(1) / mul;
@@ -1592,7 +1559,7 @@ void ModularFrameEncoder::AddVarDCTDC(const Image3F& dc, size_t group_index,
         }
       }
     }
-  } else if (enc_state->shared.frame_header.chroma_subsampling.Is444()) {
+  } else if (frame_header.chroma_subsampling.Is444()) {
     for (size_t c : {1, 0, 2}) {
       float inv_factor = enc_state->shared.quantizer.GetInvDcStep(c) * mul;
       float y_factor = enc_state->shared.quantizer.GetDcStep(1) / mul;
@@ -1618,20 +1585,17 @@ void ModularFrameEncoder::AddVarDCTDC(const Image3F& dc, size_t group_index,
     }
   } else {
     for (size_t c : {1, 0, 2}) {
-      Rect rect(
-          r.x0() >> enc_state->shared.frame_header.chroma_subsampling.HShift(c),
-          r.y0() >> enc_state->shared.frame_header.chroma_subsampling.VShift(c),
-          r.xsize() >>
-              enc_state->shared.frame_header.chroma_subsampling.HShift(c),
-          r.ysize() >>
-              enc_state->shared.frame_header.chroma_subsampling.VShift(c));
+      Rect rect(r.x0() >> frame_header.chroma_subsampling.HShift(c),
+                r.y0() >> frame_header.chroma_subsampling.VShift(c),
+                r.xsize() >> frame_header.chroma_subsampling.HShift(c),
+                r.ysize() >> frame_header.chroma_subsampling.VShift(c));
       float inv_factor = enc_state->shared.quantizer.GetInvDcStep(c) * mul;
       size_t ys = rect.ysize();
       size_t xs = rect.xsize();
       Channel& ch = stream_images_[stream_id].channel[c < 2 ? c ^ 1 : c];
       ch.w = xs;
       ch.h = ys;
-      ch.shrink();
+      JXL_RETURN_IF_ERROR(ch.shrink());
       for (size_t y = 0; y < ys; y++) {
         int32_t* quant_row = ch.plane.Row(y);
         const float* row = rect.ConstPlaneRow(dc, c, y);
@@ -1645,16 +1609,18 @@ void ModularFrameEncoder::AddVarDCTDC(const Image3F& dc, size_t group_index,
   DequantDC(r, &enc_state->shared.dc_storage, &enc_state->shared.quant_dc,
             stream_images_[stream_id], enc_state->shared.quantizer.MulDC(),
             1.0 / mul, enc_state->shared.cmap.DCFactors(),
-            enc_state->shared.frame_header.chroma_subsampling,
-            enc_state->shared.block_ctx_map);
+            frame_header.chroma_subsampling, enc_state->shared.block_ctx_map);
+  return true;
 }
 
-void ModularFrameEncoder::AddACMetadata(size_t group_index, bool jpeg_transcode,
-                                        PassesEncoderState* enc_state) {
-  const Rect r = enc_state->shared.DCGroupRect(group_index);
+Status ModularFrameEncoder::AddACMetadata(const Rect& r, size_t group_index,
+                                          bool jpeg_transcode,
+                                          PassesEncoderState* enc_state) {
   size_t stream_id = ModularStreamId::ACMetadata(group_index).ID(frame_dim_);
   stream_options_[stream_id].max_chan_size = 0xFFFFFF;
-  stream_options_[stream_id].wp_tree_mode = ModularOptions::TreeMode::kNoWP;
+  if (stream_options_[stream_id].predictor != Predictor::Weighted) {
+    stream_options_[stream_id].wp_tree_mode = ModularOptions::TreeMode::kNoWP;
+  }
   if (jpeg_transcode) {
     stream_options_[stream_id].tree_kind =
         ModularOptions::TreeKind::kJpegTranscodeACMeta;
@@ -1670,14 +1636,19 @@ void ModularFrameEncoder::AddACMetadata(size_t group_index, bool jpeg_transcode,
       cparams_.force_cfl_jpeg_recompression) {
     stream_options_[stream_id].tree_kind = ModularOptions::TreeKind::kLearn;
   }
+  stream_options_[stream_id].histogram_params =
+      stream_options_[0].histogram_params;
   // YToX, YToB, ACS + QF, EPF
   Image& image = stream_images_[stream_id];
-  image = Image(r.xsize(), r.ysize(), 8, 4);
+  JXL_ASSIGN_OR_RETURN(image, Image::Create(r.xsize(), r.ysize(), 8, 4));
   static_assert(kColorTileDimInBlocks == 8, "Color tile size changed");
   Rect cr(r.x0() >> 3, r.y0() >> 3, (r.xsize() + 7) >> 3, (r.ysize() + 7) >> 3);
-  image.channel[0] = Channel(cr.xsize(), cr.ysize(), 3, 3);
-  image.channel[1] = Channel(cr.xsize(), cr.ysize(), 3, 3);
-  image.channel[2] = Channel(r.xsize() * r.ysize(), 2, 0, 0);
+  JXL_ASSIGN_OR_RETURN(image.channel[0],
+                       Channel::Create(cr.xsize(), cr.ysize(), 3, 3));
+  JXL_ASSIGN_OR_RETURN(image.channel[1],
+                       Channel::Create(cr.xsize(), cr.ysize(), 3, 3));
+  JXL_ASSIGN_OR_RETURN(image.channel[2],
+                       Channel::Create(r.xsize() * r.ysize(), 2, 0, 0));
   ConvertPlaneAndClamp(cr, enc_state->shared.cmap.ytox_map,
                        Rect(image.channel[0].plane), &image.channel[0].plane);
   ConvertPlaneAndClamp(cr, enc_state->shared.cmap.ytob_map,
@@ -1700,9 +1671,10 @@ void ModularFrameEncoder::AddACMetadata(size_t group_index, bool jpeg_transcode,
   }
   image.channel[2].w = num;
   ac_metadata_size[group_index] = num;
+  return true;
 }
 
-void ModularFrameEncoder::EncodeQuantTable(
+Status ModularFrameEncoder::EncodeQuantTable(
     size_t size_x, size_t size_y, BitWriter* writer,
     const QuantEncoding& encoding, size_t idx,
     ModularFrameEncoder* modular_frame_encoder) {
@@ -1712,9 +1684,9 @@ void ModularFrameEncoder::EncodeQuantTable(
   if (modular_frame_encoder) {
     JXL_CHECK(modular_frame_encoder->EncodeStream(
         writer, nullptr, 0, ModularStreamId::QuantTable(idx)));
-    return;
+    return true;
   }
-  Image image(size_x, size_y, 8, 3);
+  JXL_ASSIGN_OR_RETURN(Image image, Image::Create(size_x, size_y, 8, 3));
   for (size_t c = 0; c < 3; c++) {
     for (size_t y = 0; y < size_y; y++) {
       int32_t* JXL_RESTRICT row = image.channel[c].Row(y);
@@ -1725,16 +1697,17 @@ void ModularFrameEncoder::EncodeQuantTable(
   }
   ModularOptions cfopts;
   JXL_CHECK(ModularGenericCompress(image, cfopts, writer));
+  return true;
 }
 
-void ModularFrameEncoder::AddQuantTable(size_t size_x, size_t size_y,
-                                        const QuantEncoding& encoding,
-                                        size_t idx) {
+Status ModularFrameEncoder::AddQuantTable(size_t size_x, size_t size_y,
+                                          const QuantEncoding& encoding,
+                                          size_t idx) {
   size_t stream_id = ModularStreamId::QuantTable(idx).ID(frame_dim_);
   JXL_ASSERT(encoding.qraw.qtable != nullptr);
   JXL_ASSERT(size_x * size_y * 3 == encoding.qraw.qtable->size());
   Image& image = stream_images_[stream_id];
-  image = Image(size_x, size_y, 8, 3);
+  JXL_ASSIGN_OR_RETURN(image, Image::Create(size_x, size_y, 8, 3));
   for (size_t c = 0; c < 3; c++) {
     for (size_t y = 0; y < size_y; y++) {
       int32_t* JXL_RESTRICT row = image.channel[c].Row(y);
@@ -1743,5 +1716,6 @@ void ModularFrameEncoder::AddQuantTable(size_t size_x, size_t size_y,
       }
     }
   }
+  return true;
 }
 }  // namespace jxl

@@ -10,18 +10,23 @@
 #include <jxl/types.h>
 #include <stdint.h>
 
+#include <algorithm>
+#include <cstddef>
+#include <limits>
+#include <utility>
+#include <vector>
+
+#include "lib/jxl/base/common.h"
 #include "lib/jxl/base/compiler_specific.h"
 #include "lib/jxl/base/data_parallel.h"
-#include "lib/jxl/base/span.h"
 #include "lib/jxl/base/status.h"
-#include "lib/jxl/blending.h"
 #include "lib/jxl/common.h"  // JXL_HIGH_PRECISION
 #include "lib/jxl/dec_bit_reader.h"
 #include "lib/jxl/dec_cache.h"
 #include "lib/jxl/dec_modular.h"
 #include "lib/jxl/frame_header.h"
-#include "lib/jxl/headers.h"
 #include "lib/jxl/image_bundle.h"
+#include "lib/jxl/image_metadata.h"
 
 namespace jxl {
 
@@ -31,7 +36,8 @@ namespace jxl {
 // Used in the encoder to model decoder behaviour, and in tests.
 Status DecodeFrame(PassesDecoderState* dec_state, ThreadPool* JXL_RESTRICT pool,
                    const uint8_t* next_in, size_t avail_in,
-                   ImageBundle* decoded, const CodecMetadata& metadata,
+                   FrameHeader* frame_header, ImageBundle* decoded,
+                   const CodecMetadata& metadata,
                    bool use_slow_rendering_pipeline = false);
 
 // TODO(veluca): implement "forced drawing".
@@ -236,14 +242,14 @@ class FrameDecoder {
  private:
   Status ProcessDCGlobal(BitReader* br);
   Status ProcessDCGroup(size_t dc_group_id, BitReader* br);
-  void FinalizeDC();
+  Status FinalizeDC();
   Status AllocateOutput();
   Status ProcessACGlobal(BitReader* br);
   Status ProcessACGroup(size_t ac_group_id, BitReader* JXL_RESTRICT* br,
                         size_t num_passes, size_t thread, bool force_draw,
                         bool dc_only);
   void MarkSections(const SectionInfo* sections, size_t num,
-                    SectionStatus* section_status);
+                    const SectionStatus* section_status);
 
   // Allocates storage for parallel decoding using up to `num_threads` threads
   // of up to `num_tasks` tasks. The value of `thread` passed to
@@ -266,7 +272,7 @@ class FrameDecoder {
     return true;
   }
 
-  size_t GetStorageLocation(size_t thread, size_t task) {
+  size_t GetStorageLocation(size_t thread, size_t task) const {
     if (use_task_id_) return task;
     return thread;
   }

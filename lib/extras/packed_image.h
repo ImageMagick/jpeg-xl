@@ -19,12 +19,15 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
 
 #include "lib/jxl/base/byte_order.h"
+#include "lib/jxl/base/c_callback_support.h"
 #include "lib/jxl/base/common.h"
 #include "lib/jxl/base/status.h"
 
@@ -105,7 +108,7 @@ class PackedImage {
     }
   }
 
-  void SetPixelValue(size_t y, size_t x, size_t c, float val) {
+  void SetPixelValue(size_t y, size_t x, size_t c, float val) const {
     uint8_t* data = pixels(y, x, c);
     switch (format.data_type) {
       case JXL_TYPE_UINT8:
@@ -193,24 +196,17 @@ class PackedFrame {
 
 class ChunkedPackedFrame {
  public:
-  typedef void (*ReadLine)(void* opaque, size_t xpos, size_t ypos, size_t xsize,
-                           uint8_t* buffer, size_t len);
-  ChunkedPackedFrame(size_t xsize, size_t ysize, const JxlPixelFormat& format,
-                     void* opaque, ReadLine read_line)
+  ChunkedPackedFrame(
+      size_t xsize, size_t ysize,
+      std::function<JxlChunkedFrameInputSource()> get_input_source)
       : xsize(xsize),
         ysize(ysize),
-        format(format),
-        opaque_(opaque),
-        read_line_(read_line) {}
-
-  JxlChunkedFrameInputSource GetInputSource() {
-    return JxlChunkedFrameInputSource{this,
-                                      GetColorChannelsPixelFormat,
-                                      GetColorChannelDataAt,
-                                      GetExtraChannelPixelFormat,
-                                      GetExtraChannelDataAt,
-                                      ReleaseCurrentData};
+        get_input_source_(std::move(get_input_source)) {
+    const auto input_source = get_input_source_();
+    input_source.get_color_channels_pixel_format(input_source.opaque, &format);
   }
+
+  JxlChunkedFrameInputSource GetInputSource() { return get_input_source_(); }
 
   // The Frame metadata.
   JxlFrameHeader frame_info = {};
@@ -221,53 +217,7 @@ class ChunkedPackedFrame {
   JxlPixelFormat format;
 
  private:
-  static void GetColorChannelsPixelFormat(void* opaque,
-                                          JxlPixelFormat* pixel_format) {
-    ChunkedPackedFrame* self = reinterpret_cast<ChunkedPackedFrame*>(opaque);
-    *pixel_format = self->format;
-  }
-
-  static const void* GetColorChannelDataAt(void* opaque, size_t xpos,
-                                           size_t ypos, size_t xsize,
-                                           size_t ysize, size_t* row_offset) {
-    ChunkedPackedFrame* self = reinterpret_cast<ChunkedPackedFrame*>(opaque);
-    size_t bytes_per_channel =
-        PackedImage::BitsPerChannel(self->format.data_type) / jxl::kBitsPerByte;
-    size_t bytes_per_pixel = bytes_per_channel * self->format.num_channels;
-    *row_offset = xsize * bytes_per_pixel;
-    uint8_t* buffer = reinterpret_cast<uint8_t*>(malloc(ysize * (*row_offset)));
-    for (size_t y = 0; y < ysize; ++y) {
-      self->read_line_(self->opaque_, xpos, ypos + y, xsize,
-                       &buffer[y * (*row_offset)], *row_offset);
-    }
-    self->buffers_.insert(buffer);
-    return buffer;
-  }
-
-  static void GetExtraChannelPixelFormat(void* opaque, size_t ec_index,
-                                         JxlPixelFormat* pixel_format) {
-    JXL_ABORT("Not implemented");
-  }
-
-  static const void* GetExtraChannelDataAt(void* opaque, size_t ec_index,
-                                           size_t xpos, size_t ypos,
-                                           size_t xsize, size_t ysize,
-                                           size_t* row_offset) {
-    JXL_ABORT("Not implemented");
-  }
-
-  static void ReleaseCurrentData(void* opaque, const void* buffer) {
-    ChunkedPackedFrame* self = reinterpret_cast<ChunkedPackedFrame*>(opaque);
-    auto iter = self->buffers_.find(const_cast<void*>(buffer));
-    if (iter != self->buffers_.end()) {
-      free(*iter);
-      self->buffers_.erase(iter);
-    }
-  }
-
-  void* opaque_;
-  ReadLine read_line_;
-  std::set<void*> buffers_;
+  std::function<JxlChunkedFrameInputSource()> get_input_source_;
 };
 
 // Optional metadata associated with a file
@@ -294,9 +244,21 @@ class PackedPixelFile {
   std::vector<PackedExtraChannel> extra_channels_info;
 
   // Color information of the decoded pixels.
-  // If the icc is empty, the JxlColorEncoding should be used instead.
-  std::vector<uint8_t> icc;
+  // `primary_color_representation` indicates whether `color_encoding` or `icc`
+  // is the “authoritative” encoding of the colorspace, as opposed to a fallback
+  // encoding. For example, if `color_encoding` is the primary one, as would
+  // occur when decoding a jxl file with such a representation, then `enc/jxl`
+  // will use it and ignore the ICC profile, whereas `enc/png` will include the
+  // ICC profile for compatibility.
+  // If `icc` is the primary representation, `enc/jxl` will preserve it when
+  // compressing losslessly, but *may* encode it as a color_encoding when
+  // compressing lossily.
+  enum {
+    kColorEncodingIsPrimary,
+    kIccIsPrimary
+  } primary_color_representation = kColorEncodingIsPrimary;
   JxlColorEncoding color_encoding = {};
+  std::vector<uint8_t> icc;
   // The icc profile of the original image.
   std::vector<uint8_t> orig_icc;
 
@@ -310,6 +272,8 @@ class PackedPixelFile {
   size_t num_frames() const {
     return chunked_frames.empty() ? frames.size() : chunked_frames.size();
   }
+  size_t xsize() const { return info.xsize; }
+  size_t ysize() const { return info.ysize; }
 };
 
 }  // namespace extras

@@ -73,20 +73,20 @@ void EncodeSplines(const Splines& splines, BitWriter* writer,
       splines.QuantizedSplines();
   std::vector<std::vector<Token>> tokens(1);
   tokens[0].emplace_back(kNumSplinesContext, quantized_splines.size() - 1);
-  EncodeAllStartingPoints(splines.StartingPoints(), &tokens[0]);
+  EncodeAllStartingPoints(splines.StartingPoints(), tokens.data());
 
   tokens[0].emplace_back(kQuantizationAdjustmentContext,
                          PackSigned(splines.GetQuantizationAdjustment()));
 
   for (const QuantizedSpline& spline : quantized_splines) {
-    QuantizedSplineEncoder::Tokenize(spline, &tokens[0]);
+    QuantizedSplineEncoder::Tokenize(spline, tokens.data());
   }
 
   EntropyEncodingData codes;
   std::vector<uint8_t> context_map;
   BuildAndEncodeHistograms(histogram_params, kNumSplineContexts, tokens, &codes,
                            &context_map, writer, layer, aux_out);
-  WriteTokens(tokens[0], codes, context_map, writer, layer, aux_out);
+  WriteTokens(tokens[0], codes, context_map, 0, writer, layer, aux_out);
 }
 
 Splines FindSplines(const Image3F& opsin) {
