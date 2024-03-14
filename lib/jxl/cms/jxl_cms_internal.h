@@ -220,7 +220,9 @@ static std::vector<uint16_t> CreateTableCurve(uint32_t N, const ExtraTF tf,
                    : TF_PQ_Base::DisplayFromEncoded(kPQIntensityTarget, dx);
     if (tone_map && tf == ExtraTF::kPQ &&
         kPQIntensityTarget > kDefaultIntensityTarget) {
-      float r = y * 10000 / kPQIntensityTarget, g = r, b = r;
+      float r = y * 10000 / kPQIntensityTarget;
+      float g = r;
+      float b = r;
       tone_mapper.ToneMap(&r, &g, &b);
       y = r;
     }
@@ -292,10 +294,18 @@ static void ICCComputeMD5(const std::vector<uint8_t>& data, uint8_t sum[16])
       6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
   };
 
-  uint32_t a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+  uint32_t a0 = 0x67452301;
+  uint32_t b0 = 0xefcdab89;
+  uint32_t c0 = 0x98badcfe;
+  uint32_t d0 = 0x10325476;
 
   for (size_t i = 0; i < data64.size(); i += 64) {
-    uint32_t a = a0, b = b0, c = c0, d = d0, f, g;
+    uint32_t a = a0;
+    uint32_t b = b0;
+    uint32_t c = c0;
+    uint32_t d = d0;
+    uint32_t f;
+    uint32_t g;
     for (size_t j = 0; j < 64; j++) {
       if (j < 16) {
         f = (b & c) | ((~b) & d);
@@ -310,8 +320,10 @@ static void ICCComputeMD5(const std::vector<uint8_t>& data, uint8_t sum[16])
         f = c ^ (b | (~d));
         g = (7 * j) & 0xf;
       }
-      uint32_t dg0 = data64[i + g * 4 + 0], dg1 = data64[i + g * 4 + 1],
-               dg2 = data64[i + g * 4 + 2], dg3 = data64[i + g * 4 + 3];
+      uint32_t dg0 = data64[i + g * 4 + 0];
+      uint32_t dg1 = data64[i + g * 4 + 1];
+      uint32_t dg2 = data64[i + g * 4 + 2];
+      uint32_t dg3 = data64[i + g * 4 + 3];
       uint32_t u = dg0 | (dg1 << 8u) | (dg2 << 16u) | (dg3 << 24u);
       f += a + sineparts[j] + u;
       a = d;
@@ -433,8 +445,12 @@ static Status CreateICCHeader(const JxlColorEncoding& c,
 
   // Three uint32_t's date/time encoding.
   // TODO(lode): encode actual date and time, this is a placeholder
-  uint32_t year = 2019, month = 12, day = 1;
-  uint32_t hour = 0, minute = 0, second = 0;
+  uint32_t year = 2019;
+  uint32_t month = 12;
+  uint32_t day = 1;
+  uint32_t hour = 0;
+  uint32_t minute = 0;
+  uint32_t second = 0;
   WriteICCUint16(year, 24, header);
   WriteICCUint16(month, 26, header);
   WriteICCUint16(day, 28, header);
@@ -491,9 +507,9 @@ static void CreateICCMlucTag(const std::string& text,
   WriteICCTag("enUS", tags->size(), tags);
   WriteICCUint32(text.size() * 2, tags->size(), tags);
   WriteICCUint32(28, tags->size(), tags);
-  for (size_t i = 0; i < text.size(); i++) {
+  for (char c : text) {
     tags->push_back(0);  // prepend 0 for UTF-16
-    tags->push_back(text[i]);
+    tags->push_back(c);
   }
 }
 
@@ -573,8 +589,8 @@ static Status CreateICCCurvParaTag(std::vector<float> params, size_t curve_type,
   WriteICCUint32(0, tags->size(), tags);
   WriteICCUint16(curve_type, tags->size(), tags);
   WriteICCUint16(0, tags->size(), tags);
-  for (size_t i = 0; i < params.size(); i++) {
-    JXL_RETURN_IF_ERROR(WriteICCS15Fixed16(params[i], tags->size(), tags));
+  for (float param : params) {
+    JXL_RETURN_IF_ERROR(WriteICCS15Fixed16(param, tags->size(), tags));
   }
   return true;
 }
@@ -649,8 +665,8 @@ static Status CreateICCLutAtoBTagForXYB(std::vector<uint8_t>* tags) {
                            -0.050022, 0.5683655,  -0.018344,
                            -1.387676, 1.1145555,  0.6857255};
   // 12 * 4 = 48 bytes
-  for (size_t i = 0; i < 9; ++i) {
-    JXL_RETURN_IF_ERROR(WriteICCS15Fixed16(matrix[i], tags->size(), tags));
+  for (double v : matrix) {
+    JXL_RETURN_IF_ERROR(WriteICCS15Fixed16(v, tags->size(), tags));
   }
   for (size_t i = 0; i < 3; ++i) {
     float intercept = 0;
@@ -880,7 +896,9 @@ static std::string ColorEncodingDescriptionImpl(const JxlColorEncoding& c) {
 
 static Status MaybeCreateProfileImpl(const JxlColorEncoding& c,
                                      std::vector<uint8_t>* icc) {
-  std::vector<uint8_t> header, tagtable, tags;
+  std::vector<uint8_t> header;
+  std::vector<uint8_t> tagtable;
+  std::vector<uint8_t> tags;
   JxlTransferFunction tf = c.transfer_function;
   if (c.color_space == JXL_COLOR_SPACE_UNKNOWN ||
       tf == JXL_TRANSFER_FUNCTION_UNKNOWN) {
@@ -910,7 +928,8 @@ static Status MaybeCreateProfileImpl(const JxlColorEncoding& c,
   // tag count, deferred to later
   WriteICCUint32(0, tagtable.size(), &tagtable);
 
-  size_t tag_offset = 0, tag_size = 0;
+  size_t tag_offset = 0;
+  size_t tag_size = 0;
 
   CreateICCMlucTag(ColorEncodingDescriptionImpl(c), &tags);
   FinalizeICCTag(&tags, &tag_offset, &tag_size);
@@ -1042,8 +1061,8 @@ static Status MaybeCreateProfileImpl(const JxlColorEncoding& c,
   WriteICCUint32(header.size() + tagtable.size() + tags.size(), 0, &header);
 
   *icc = header;
-  Bytes(tagtable).AppendTo(icc);
-  Bytes(tags).AppendTo(icc);
+  Bytes(tagtable).AppendTo(*icc);
+  Bytes(tags).AppendTo(*icc);
 
   // The MD5 checksum must be computed on the profile with profile flags,
   // rendering intent, and region of the checksum itself, set to 0.

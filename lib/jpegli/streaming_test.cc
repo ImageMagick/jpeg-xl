@@ -69,7 +69,7 @@ struct DestinationManager {
     dst->bytes_in_buffer = dst_buf.size();
     src->next_output_byte = src_buf.data();
     src->free_in_buffer = src_buf.size();
-    return true;
+    return TRUE;
   }
 
   static void term_destination(j_compress_ptr cinfo) {
@@ -87,6 +87,7 @@ class StreamingTestParam : public ::testing::TestWithParam<TestConfig> {};
 TEST_P(StreamingTestParam, TestStreaming) {
   jpeg_decompress_struct dinfo = {};
   jpeg_compress_struct cinfo = {};
+  SourceManager src;
   TestConfig config = GetParam();
   TestImage& input = config.input;
   TestImage output;
@@ -99,7 +100,6 @@ TEST_P(StreamingTestParam, TestStreaming) {
     // compressor's output is connected to the decompressor's input.
     jpegli_create_decompress(&dinfo);
     jpegli_create_compress(&cinfo);
-    SourceManager src;
     dinfo.src = reinterpret_cast<jpeg_source_mgr*>(&src);
     DestinationManager dest(&src);
     cinfo.dest = reinterpret_cast<jpeg_destination_mgr*>(&dest);

@@ -59,11 +59,7 @@ class ThreadParallelRunner {
   // "num_worker_threads" defaults to one per hyperthread. If zero, all tasks
   // run on the main thread.
   explicit ThreadParallelRunner(
-#if defined(__EMSCRIPTEN__)
-      int num_worker_threads = 0);
-#else
       int num_worker_threads = std::thread::hardware_concurrency());
-#endif
 
   // Waits for all threads to exit.
   ~ThreadParallelRunner();
@@ -136,8 +132,8 @@ class ThreadParallelRunner {
 
   // Attempts to reserve and perform some work from the global range of tasks,
   // which is encoded within "command". Returns after all tasks are reserved.
-  static void RunRange(ThreadParallelRunner* self, const WorkerCommand command,
-                       const int thread);
+  static void RunRange(ThreadParallelRunner* self, WorkerCommand command,
+                       int thread);
 
   static void ThreadFunc(ThreadParallelRunner* self, int thread);
 

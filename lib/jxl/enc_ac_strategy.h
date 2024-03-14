@@ -59,7 +59,7 @@ struct ACSConfig {
 
 struct AcStrategyHeuristics {
   explicit AcStrategyHeuristics(const CompressParams& cparams)
-      : cparams(cparams) {}
+      : cparams(cparams), mem_per_thread(0), qmem_per_thread(0) {}
   void Init(const Image3F& src, const Rect& rect_in, const ImageF& quant_field,
             const ImageF& mask, const ImageF& mask1x1,
             DequantMatrices* matrices);
@@ -69,7 +69,7 @@ struct AcStrategyHeuristics {
   Status Finalize(const FrameDimensions& frame_dim,
                   const AcStrategyImage& ac_strategy, AuxOut* aux_out);
   const CompressParams& cparams;
-  ACSConfig config;
+  ACSConfig config = {};
   size_t mem_per_thread;
   hwy::AlignedFreeUniquePtr<float[]> mem;
   size_t qmem_per_thread;

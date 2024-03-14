@@ -1233,10 +1233,13 @@ Status EncodeGroups(const FrameHeader& frame_header,
   const size_t num_groups = frame_dim.num_groups;
   const size_t num_passes = enc_state->progressive_splitter.GetNumPasses();
   const size_t global_ac_index = frame_dim.num_dc_groups + 1;
-  const bool is_small_image = frame_dim.num_groups == 1 && num_passes == 1;
-
-  group_codes->resize(
-      NumTocEntries(num_groups, frame_dim.num_dc_groups, num_passes));
+  const bool is_small_image =
+      !enc_state->streaming_mode && num_groups == 1 && num_passes == 1;
+  const size_t num_toc_entries =
+      is_small_image ? 1
+                     : AcGroupIndex(0, 0, num_groups, frame_dim.num_dc_groups) +
+                           num_groups * num_passes;
+  group_codes->resize(num_toc_entries);
 
   const auto get_output = [&](const size_t index) {
     return &(*group_codes)[is_small_image ? 0 : index];
@@ -1363,6 +1366,11 @@ Status EncodeGroups(const FrameHeader& frame_header,
         has_error = true;
         return;
       }
+      JXL_DEBUG_V(2,
+                  "AC group %u [abs %" PRIuS "] pass %" PRIuS
+                  " encoded size is %" PRIuS " bits",
+                  group_index, ac_group_id, i,
+                  ac_group_code(i, group_index)->BitsWritten());
     }
   };
   JXL_RETURN_IF_ERROR(RunOnPool(pool, 0, num_groups, resize_aux_outs,
@@ -1860,7 +1868,7 @@ void RemoveUnusedHistograms(std::vector<uint8_t>& context_map,
   for (uint8_t histo_idx : inv_remap) {
     new_codes.encoding_info.emplace_back(
         std::move(codes.encoding_info[histo_idx]));
-    new_codes.uint_config.emplace_back(std::move(codes.uint_config[histo_idx]));
+    new_codes.uint_config.emplace_back(codes.uint_config[histo_idx]);
     new_codes.encoded_histograms.emplace_back(
         std::move(codes.encoded_histograms[histo_idx]));
   }

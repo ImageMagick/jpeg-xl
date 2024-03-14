@@ -133,7 +133,8 @@ struct PaletteIterationData {
                                                delta_frequency.first[1],
                                                delta_frequency.first[2]};
       float delta_distance =
-          sqrt(palette_internal::ColorDistance({0, 0, 0}, current_delta)) + 1;
+          std::sqrt(palette_internal::ColorDistance({0, 0, 0}, current_delta)) +
+          1;
       delta_frequency.second *= delta_distance * delta_distance_multiplier;
     }
 
@@ -427,7 +428,7 @@ Status FwdPaletteIteration(Image &input, uint32_t begin_c, uint32_t end_c,
         for (int diffusion_index = 0; diffusion_index < 2; ++diffusion_index) {
           for (size_t c = 0; c < nb; c++) {
             color_with_error[c] =
-                p_in[c][x] + palette_iteration_data.final_run *
+                p_in[c][x] + (palette_iteration_data.final_run ? 1 : 0) *
                                  kDiffusionMultiplier[diffusion_index] *
                                  error_row[0][c][x + 2];
             color[c] = Clamp1(lroundf(color_with_error[c]), 0l,
@@ -510,7 +511,7 @@ Status FwdPaletteIteration(Image &input, uint32_t begin_c, uint32_t end_c,
           float local_error = color_with_error[c] - best_val[c];
           len_error += local_error * local_error;
         }
-        len_error = sqrt(len_error);
+        len_error = std::sqrt(len_error);
         float modulate = 1.0;
         int len_limit = 38 << std::max(0, bit_depth - 8);
         if (len_error > len_limit) {

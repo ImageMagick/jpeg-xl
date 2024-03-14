@@ -427,7 +427,7 @@ void PrepareForiMCURow(j_decompress_ptr cinfo) {
     int offset = m->streaming_mode_ ? 0 : by0;
     m->coeff_rows[c] = (*cinfo->mem->access_virt_barray)(
         reinterpret_cast<j_common_ptr>(cinfo), m->coef_arrays[c], offset,
-        max_block_rows, true);
+        max_block_rows, TRUE);
   }
 }
 
@@ -472,7 +472,7 @@ int ProcessScan(j_decompress_ptr cinfo, const uint8_t* const data,
     }
 
     // Decode one MCU.
-    HWY_ALIGN_MAX coeff_t sink_block[DCTSIZE2];
+    HWY_ALIGN_MAX static coeff_t sink_block[DCTSIZE2] = {0};
     bool scan_ok = true;
     for (int i = 0; i < cinfo->comps_in_scan; ++i) {
       const jpeg_component_info* comp = cinfo->cur_comp_info[i];

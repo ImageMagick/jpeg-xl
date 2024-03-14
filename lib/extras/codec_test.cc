@@ -78,8 +78,8 @@ void VerifySameImage(const PackedImage& im0, size_t bits_per_sample0,
   };
   double factor0 = get_factor(im0.format, bits_per_sample0);
   double factor1 = get_factor(im1.format, bits_per_sample1);
-  auto* pixels0 = static_cast<const uint8_t*>(im0.pixels());
-  auto* pixels1 = static_cast<const uint8_t*>(im1.pixels());
+  const auto* pixels0 = static_cast<const uint8_t*>(im0.pixels());
+  const auto* pixels1 = static_cast<const uint8_t*>(im1.pixels());
   auto rgba0 =
       test::ConvertToRGBA32(pixels0, im0.xsize, im0.ysize, im0.format, factor0);
   auto rgba1 =
@@ -227,7 +227,7 @@ void CreateTestImage(const TestImageParams& params, PackedPixelFile* ppf) {
   ppf->info.exponent_bits_per_sample = params.bits_per_sample == 32 ? 8 : 0;
   ppf->info.num_color_channels = params.is_gray ? 1 : 3;
   ppf->info.alpha_bits = params.add_alpha ? params.bits_per_sample : 0;
-  ppf->info.alpha_premultiplied = (params.codec == Codec::kEXR);
+  ppf->info.alpha_premultiplied = TO_JXL_BOOL(params.codec == Codec::kEXR);
 
   JxlColorEncoding color_encoding = CreateTestColorEncoding(params.is_gray);
   ppf->icc = GenerateICC(color_encoding);

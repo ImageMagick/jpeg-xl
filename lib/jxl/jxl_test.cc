@@ -358,6 +358,47 @@ TEST(JxlTest, RoundtripLargeFast) {
   EXPECT_THAT(ComputeDistance2(t.ppf(), ppf_out), IsSlightlyBelow(78));
 }
 
+TEST(JxlTest, JXL_X86_64_TEST(RoundtripLargeEmptyModular)) {
+  ThreadPoolForTests pool(8);
+  TestImage t;
+  t.SetDimensions(8192, 8192).SetDataType(JXL_TYPE_UINT8).SetChannels(1);
+  TestImage::Frame frame = t.AddFrame();
+  frame.ZeroFill();
+  for (size_t y = 0; y < 513; y += 7) {
+    for (size_t x = 0; x < 513; x += 7) {
+      frame.SetValue(y, x, 0, 0.88);
+    }
+  }
+
+  JXLCompressParams cparams;
+  cparams.AddOption(JXL_ENC_FRAME_SETTING_EFFORT, 1);
+  cparams.AddOption(JXL_ENC_FRAME_SETTING_MODULAR, 1);
+  cparams.AddOption(JXL_ENC_FRAME_SETTING_RESPONSIVE, 1);
+  cparams.AddOption(JXL_ENC_FRAME_SETTING_MODULAR_GROUP_SIZE, 2);
+  cparams.AddOption(JXL_ENC_FRAME_SETTING_DECODING_SPEED, 2);
+
+  PackedPixelFile ppf_out;
+  EXPECT_NEAR(Roundtrip(t.ppf(), cparams, {}, &pool, &ppf_out), 110846, 10000);
+  EXPECT_THAT(ComputeDistance2(t.ppf(), ppf_out), IsSlightlyBelow(0.7));
+}
+
+TEST(JxlTest, RoundtripOutputColorSpace) {
+  ThreadPoolForTests pool(8);
+  const std::vector<uint8_t> orig = ReadTestData("jxl/flower/flower.png");
+  TestImage t;
+  t.DecodeFromBytes(orig).ClearMetadata();
+
+  JXLCompressParams cparams;
+  cparams.AddOption(JXL_ENC_FRAME_SETTING_EFFORT, 7);  // kSquirrel
+
+  JXLDecompressParams dparams;
+  dparams.color_space = "RGB_D65_DCI_Rel_709";
+  PackedPixelFile ppf_out;
+  EXPECT_NEAR(Roundtrip(t.ppf(), cparams, dparams, &pool, &ppf_out), 503000,
+              12000);
+  EXPECT_THAT(ComputeDistance2(t.ppf(), ppf_out), IsSlightlyBelow(78));
+}
+
 TEST(JxlTest, RoundtripDotsForceEpf) {
   ThreadPoolForTests pool(8);
   const std::vector<uint8_t> orig =
@@ -544,7 +585,7 @@ TEST(JxlTest, RoundtripSmallPatches) {
 // buffers in arbitrary unsigned and floating point formats, and then roundtrip
 // test the lossless codepath to make sure the exact binary representations
 // are preserved.
-#if 0
+#if JXL_FALSE
 TEST(JxlTest, RoundtripImageBundleOriginalBits) {
   // Image does not matter, only io.metadata.m and io2.metadata.m are tested.
   JXL_ASSIGN_OR_DIE(Image3F image, Image3F::Create(1, 1));
@@ -1600,10 +1641,13 @@ struct StreamingTestParam {
   size_t xsize;
   size_t ysize;
   bool is_grey;
+  bool has_alpha;
   int effort;
   bool progressive;
 
-  size_t num_channels() const { return is_grey ? 1 : 3; }
+  size_t num_channels() const {
+    return (is_grey ? 1 : 3) + (has_alpha ? 1 : 0);
+  }
 
   float max_psnr() const { return is_grey ? 90 : 50; }
 
@@ -1611,11 +1655,13 @@ struct StreamingTestParam {
     std::vector<StreamingTestParam> params;
     for (int e : {1, 3, 4, 7}) {
       for (bool g : {false, true}) {
-        params.push_back(StreamingTestParam{357, 517, g, e, false});
-        params.push_back(StreamingTestParam{2247, 2357, g, e, false});
+        params.push_back(StreamingTestParam{357, 517, g, false, e, false});
+        params.push_back(StreamingTestParam{2247, 2357, g, false, e, false});
       }
     }
-    params.push_back(StreamingTestParam{2247, 2357, false, 1, true});
+    params.push_back(StreamingTestParam{2247, 2357, false, false, 1, true});
+    params.push_back(StreamingTestParam{2247, 2157, false, false, 5, false});
+    params.push_back(StreamingTestParam{2247, 2157, false, true, 5, false});
     return params;
   }
 };
@@ -1689,7 +1735,8 @@ struct StreamingEncodingTestParam {
   }
 };
 
-std::ostream& operator<<(std::ostream& out, StreamingEncodingTestParam p) {
+std::ostream& operator<<(std::ostream& out,
+                         const StreamingEncodingTestParam& p) {
   out << p.file << "-";
   out << "e" << p.effort;
   if (p.distance == 0) {

@@ -331,6 +331,8 @@ struct PrefixCode {
                                             uint8_t* min_limit,
                                             uint8_t* max_limit,
                                             uint8_t* nbits) {
+    assert(precision < 15);
+    assert(n <= kMaxNumSymbols);
     std::vector<T> dynp(((1U << precision) + 1) * (n + 1), infty);
     auto d = [&](size_t sym, size_t off) -> T& {
       return dynp[sym * ((1 << precision) + 1) + off];
@@ -428,10 +430,11 @@ struct PrefixCode {
   }
 
   // Invalid code, used to construct arrays.
-  PrefixCode() {}
+  PrefixCode() = default;
 
   template <typename BitDepth>
-  PrefixCode(BitDepth, uint64_t* raw_counts, uint64_t* lz77_counts) {
+  PrefixCode(BitDepth /* bitdepth */, uint64_t* raw_counts,
+             uint64_t* lz77_counts) {
     // "merge" together all the lz77 counts in a single symbol for the level 1
     // table (containing just the raw symbols, up to length 7).
     uint64_t level1_counts[kNumRawSymbols + 1];
@@ -3573,8 +3576,7 @@ void PrepareDCGlobalPalette(bool is_single_group, size_t width, size_t height,
   int16_t p[4][32 + 1024] = {};
   uint8_t prgba[4];
   size_t i = 0;
-  size_t have_zero = 0;
-  if (palette[pcolors - 1] == 0) have_zero = 1;
+  size_t have_zero = 1;
   for (; i < pcolors; i++) {
     memcpy(prgba, &palette[i], 4);
     p[0][16 + i + have_zero] = prgba[0];
@@ -4023,7 +4025,7 @@ namespace default_implementation {
 #else  // FJXL_ENABLE_NEON
 
 namespace default_implementation {
-#include "lib/jxl/enc_fast_lossless.cc"
+#include "lib/jxl/enc_fast_lossless.cc"  // NOLINT
 }
 
 #if FJXL_ENABLE_AVX2
@@ -4042,7 +4044,7 @@ namespace default_implementation {
 
 namespace AVX2 {
 #define FJXL_AVX2
-#include "lib/jxl/enc_fast_lossless.cc"
+#include "lib/jxl/enc_fast_lossless.cc"  // NOLINT
 #undef FJXL_AVX2
 }  // namespace AVX2
 
@@ -4177,18 +4179,20 @@ void JxlFastLosslessProcessFrame(
       __builtin_cpu_supports("avx512vbmi") &&
       __builtin_cpu_supports("avx512bw") && __builtin_cpu_supports("avx512f") &&
       __builtin_cpu_supports("avx512vl")) {
-    return AVX512::JxlFastLosslessProcessFrameImpl(
-        frame_state, is_last, runner_opaque, runner, output_processor);
+    AVX512::JxlFastLosslessProcessFrameImpl(frame_state, is_last, runner_opaque,
+                                            runner, output_processor);
+    return;
   }
 #endif
 #if FJXL_ENABLE_AVX2
   if (__builtin_cpu_supports("avx2")) {
-    return AVX2::JxlFastLosslessProcessFrameImpl(
-        frame_state, is_last, runner_opaque, runner, output_processor);
+    AVX2::JxlFastLosslessProcessFrameImpl(frame_state, is_last, runner_opaque,
+                                          runner, output_processor);
+    return;
   }
 #endif
 
-  return default_implementation::JxlFastLosslessProcessFrameImpl(
+  default_implementation::JxlFastLosslessProcessFrameImpl(
       frame_state, is_last, runner_opaque, runner, output_processor);
 }
 

@@ -99,10 +99,16 @@ void TokenizeACProgressiveScan(j_compress_ptr cinfo, int scan_index,
   TokenArray* ta = &m->token_arrays[m->cur_token_array];
   sti->token_offset = m->total_num_tokens + ta->num_tokens;
   sti->restarts = Allocate<size_t>(cinfo, num_restarts, JPOOL_IMAGE);
+  const auto emit_eob_run = [&]() {
+    int nbits = jxl::FloorLog2Nonzero<uint32_t>(eob_run);
+    int symbol = nbits << 4u;
+    *m->next_token++ = Token(context, symbol, eob_run & ((1 << nbits) - 1));
+    eob_run = 0;
+  };
   for (JDIMENSION by = 0; by < comp->height_in_blocks; ++by) {
     JBLOCKARRAY ba = (*cinfo->mem->access_virt_barray)(
         reinterpret_cast<j_common_ptr>(cinfo), m->coeff_buffers[comp_idx], by,
-        1, false);
+        1, FALSE);
     // Each coefficient can appear in at most one token, but we have to reserve
     // one extra EOBrun token that was rolled over from the previous block-row
     // and has to be flushed at the end.
@@ -121,13 +127,7 @@ void TokenizeACProgressiveScan(j_compress_ptr cinfo, int scan_index,
     }
     for (JDIMENSION bx = 0; bx < comp->width_in_blocks; ++bx) {
       if (restart_interval > 0 && restarts_to_go == 0) {
-        if (eob_run > 0) {
-          int nbits = jxl::FloorLog2Nonzero<uint32_t>(eob_run);
-          int symbol = nbits << 4u;
-          *m->next_token++ =
-              Token(context, symbol, eob_run & ((1 << nbits) - 1));
-          eob_run = 0;
-        }
+        if (eob_run > 0) emit_eob_run();
         ta->num_tokens = m->next_token - ta->tokens;
         sti->restarts[restart_idx++] = m->total_num_tokens + ta->num_tokens;
         restarts_to_go = restart_interval;
@@ -157,13 +157,7 @@ void TokenizeACProgressiveScan(j_compress_ptr cinfo, int scan_index,
           num_future_nzeros++;
           continue;
         }
-        if (eob_run > 0) {
-          int nbits = jxl::FloorLog2Nonzero<uint32_t>(eob_run);
-          int symbol = nbits << 4u;
-          *m->next_token++ =
-              Token(context, symbol, eob_run & ((1 << nbits) - 1));
-          eob_run = 0;
-        }
+        if (eob_run > 0) emit_eob_run();
         while (r > 15) {
           *m->next_token++ = Token(context, 0xf0, 0);
           r -= 16;
@@ -176,13 +170,7 @@ void TokenizeACProgressiveScan(j_compress_ptr cinfo, int scan_index,
       }
       if (r > 0) {
         ++eob_run;
-        if (eob_run == 0x7FFF) {
-          int nbits = jxl::FloorLog2Nonzero<uint32_t>(eob_run);
-          int symbol = nbits << 4u;
-          *m->next_token++ =
-              Token(context, symbol, eob_run & ((1 << nbits) - 1));
-          eob_run = 0;
-        }
+        if (eob_run == 0x7FFF) emit_eob_run();
       }
       sti->num_nonzeros += num_nzeros;
       sti->num_future_nonzeros += num_future_nzeros;
@@ -191,11 +179,8 @@ void TokenizeACProgressiveScan(j_compress_ptr cinfo, int scan_index,
     ta->num_tokens = m->next_token - ta->tokens;
   }
   if (eob_run > 0) {
-    int nbits = jxl::FloorLog2Nonzero<uint32_t>(eob_run);
-    int symbol = nbits << 4u;
-    *m->next_token++ = Token(context, symbol, eob_run & ((1 << nbits) - 1));
+    emit_eob_run();
     ++ta->num_tokens;
-    eob_run = 0;
   }
   sti->num_tokens = m->total_num_tokens + ta->num_tokens - sti->token_offset;
   sti->restarts[restart_idx++] = m->total_num_tokens + ta->num_tokens;
@@ -230,7 +215,7 @@ void TokenizeACRefinementScan(j_compress_ptr cinfo, int scan_index,
   for (JDIMENSION by = 0; by < comp->height_in_blocks; ++by) {
     JBLOCKARRAY ba = (*cinfo->mem->access_virt_barray)(
         reinterpret_cast<j_common_ptr>(cinfo), m->coeff_buffers[comp_idx], by,
-        1, false);
+        1, FALSE);
     for (JDIMENSION bx = 0; bx < comp->width_in_blocks; ++bx) {
       if (restart_interval > 0 && restarts_to_go == 0) {
         sti->restarts[restart_idx++] = next_token - sti->tokens;
@@ -338,7 +323,7 @@ void TokenizeScan(j_compress_ptr cinfo, size_t scan_index, int ac_ctx_offset,
   // "Non-interleaved" means color data comes in separate scans, in other words
   // each scan can contain only one color component.
   const bool is_interleaved = (scan_info->comps_in_scan > 1);
-  const bool is_progressive = cinfo->progressive_mode;
+  const bool is_progressive = FROM_JXL_BOOL(cinfo->progressive_mode);
   const int Ah = scan_info->Ah;
   const int Al = scan_info->Al;
   HWY_ALIGN constexpr coeff_t kSinkBlock[DCTSIZE2] = {0};
@@ -374,7 +359,7 @@ void TokenizeScan(j_compress_ptr cinfo, size_t scan_index, int ac_ctx_offset,
       int max_block_rows = std::min(n_blocks_y, block_rows_left);
       ba[i] = (*cinfo->mem->access_virt_barray)(
           reinterpret_cast<j_common_ptr>(cinfo), m->coeff_buffers[comp_idx],
-          by0, max_block_rows, false);
+          by0, max_block_rows, FALSE);
     }
     if (!cinfo->progressive_mode) {
       int max_tokens_per_mcu_row = MaxNumTokensPerMCURow(cinfo);
@@ -577,8 +562,8 @@ void AddHistograms(const Histogram& a, const Histogram& b, Histogram* c) {
 }
 
 bool IsEmptyHistogram(const Histogram& histo) {
-  for (size_t i = 0; i < kJpegHuffmanAlphabetSize; ++i) {
-    if (histo.count[i]) return false;
+  for (int count : histo.count) {
+    if (count) return false;
   }
   return true;
 }

@@ -18,6 +18,7 @@
 #include "lib/jxl/base/bits.h"
 #include "lib/jxl/base/byte_order.h"
 #include "lib/jxl/base/common.h"
+#include "lib/jxl/base/status.h"
 #include "lib/jxl/frame_dimensions.h"
 #include "lib/jxl/image_bundle.h"
 #include "lib/jxl/jpeg/dec_jpeg_serialization_state.h"
@@ -142,12 +143,14 @@ bool JumpToByteBoundary(JpegBitWriter* bw, const uint8_t** pad_bits,
   } else {
     pad_pattern = 0;
     const uint8_t* src = *pad_bits;
-    // TODO(eustas): bitwise reading looks insanely ineffective...
+    // TODO(eustas): bitwise reading looks insanely ineffective!
     while (n_bits--) {
       pad_pattern <<= 1;
       if (src >= pad_bits_end) return false;
-      // TODO(eustas): DCHECK *src == {0, 1}
-      pad_pattern |= !!*(src++);
+      uint8_t bit = *src;
+      src++;
+      JXL_ASSERT(bit <= 1);
+      pad_pattern |= bit;
     }
     *pad_bits = src;
   }
@@ -527,7 +530,7 @@ bool EncodeDCTBlockSequential(const coeff_t* coeffs, HuffmanCodeTable* dc_huff,
 
   int dc_nbits = (temp2 == 0) ? 0 : (FloorLog2Nonzero<uint32_t>(temp2) + 1);
   WriteSymbol(dc_nbits, dc_huff, bw);
-#if false
+#if JXL_FALSE
   // If the input is corrupt, this could be triggered. Checking is
   // costly though, so it makes more sense to avoid this branch.
   // (producing a corrupt JPEG when the input is corrupt, instead

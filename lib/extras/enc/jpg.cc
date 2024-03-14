@@ -177,7 +177,7 @@ Status SetJpegProgression(int progressive_id,
     jpeg_scan_info scan_info = scan_script[i];
     FilterScanComponents(cinfo, &scan_info);
     if (scan_info.comps_in_scan > 0) {
-      scan_infos->emplace_back(std::move(scan_info));
+      scan_infos->emplace_back(scan_info);
     }
   }
   cinfo->scan_info = scan_infos->data();
@@ -216,8 +216,8 @@ void WriteExif(jpeg_compress_struct* const cinfo,
   for (const unsigned char c : kExifSignature) {
     jpeg_write_m_byte(cinfo, c);
   }
-  for (size_t i = 0; i < exif.size(); ++i) {
-    jpeg_write_m_byte(cinfo, exif[i]);
+  for (uint8_t c : exif) {
+    jpeg_write_m_byte(cinfo, c);
   }
 }
 
@@ -400,7 +400,7 @@ struct MySearchHook : public sjpeg::SearchHook {
   }
   bool Update(float result) override {
     value = result;
-    if (fabs(value - target) < tolerance * target) {
+    if (std::fabs(value - target) < tolerance * target) {
       return true;
     }
     if (value > target) {
@@ -419,9 +419,9 @@ struct MySearchHook : public sjpeg::SearchHook {
     } else {
       q = (qmin + qmax) / 2.;
     }
-    return (pass > 0 && fabs(q - last_q) < q_precision);
+    return (pass > 0 && std::fabs(q - last_q) < q_precision);
   }
-  ~MySearchHook() override {}
+  ~MySearchHook() override = default;
 };
 #endif
 
