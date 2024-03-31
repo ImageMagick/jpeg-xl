@@ -48,3 +48,5 @@ lcms
   Define to use the jpeg-xl library
 */
 #define MAGICKCORE_JXL_DELEGATE
+
+[ONLY_IMAGEMAGICK7]
