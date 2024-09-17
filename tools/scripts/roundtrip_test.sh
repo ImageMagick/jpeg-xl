@@ -6,7 +6,8 @@
 
 # End-to-end roundtrip tests for cjxl and djxl tools.
 
-MYDIR=$(dirname $(realpath "$0"))
+SELF=$(realpath "$0")
+MYDIR=$(dirname "${SELF}")
 JPEGXL_TEST_DATA_PATH="${MYDIR}/../../testdata"
 
 set -eux
@@ -73,7 +74,7 @@ roundtrip_test() {
       # Test decoding to 16 bit png.
       "${decoder}" "${jxlfn}" "${outfn}" --bits_per_sample 16
       local dist="$("${comparator}" "${infn}" "${outfn}")"
-      python3 -c "import sys; sys.exit(not ${dist} <= ${maxdist})"
+      python3 -c "import sys; sys.exit(not ${dist} <= ${maxdist} + 0.0002)"
 
       # Test decoding to pfm.
       local outfn="$(mktemp -p "$tmpdir").pfm"

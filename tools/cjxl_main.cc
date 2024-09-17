@@ -27,7 +27,6 @@
 #include <iostream>
 #include <memory>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include "lib/extras/dec/color_hints.h"
@@ -77,21 +76,10 @@ struct CompressArgs {
   // CompressArgs() = default;
   void AddCommandLineOptions(CommandLineParser* cmdline) {
     std::string input_help("the input can be ");
-    if (jxl::extras::CanDecode(jxl::extras::Codec::kPNG)) {
-      input_help.append("PNG, APNG, ");
+    input_help.append(jxl::extras::ListOfDecodeCodecs());
+    if (!jxl::extras::CanDecode(jxl::extras::Codec::kJPG)) {
+      input_help.append(", JPEG (lossless recompression only)");
     }
-    if (jxl::extras::CanDecode(jxl::extras::Codec::kGIF)) {
-      input_help.append("GIF, ");
-    }
-    if (jxl::extras::CanDecode(jxl::extras::Codec::kJPG)) {
-      input_help.append("JPEG, ");
-    } else {
-      input_help.append("JPEG (lossless recompression only), ");
-    }
-    if (jxl::extras::CanDecode(jxl::extras::Codec::kEXR)) {
-      input_help.append("EXR, ");
-    }
-    input_help.append("PPM, PFM, PAM, PGX, or JXL");
     // Positional arguments.
     cmdline->AddPositionalOption("INPUT", /* required = */ true, input_help,
                                  &file_in);
@@ -229,6 +217,7 @@ struct CompressArgs {
         "rendering intent\n"
         "      -x color_space=RGB_D65_202_Rel_PeQ is Rec.2100 PQ with relative "
         "rendering intent\n"
+        "    Shorthands: sRGB, DisplayP3, Rec2100PQ, Rec2100HLG\n"
         "    The key 'icc_pathname' refers to a binary file containing an ICC "
         "profile.\n"
         "    The keys 'exif', 'xmp', and 'jumbf' refer to a binary file "
@@ -394,6 +383,11 @@ struct CompressArgs {
                            "cost of a massive speed hit.",
                            &allow_expert_options, &SetBooleanTrue, 3);
 
+    cmdline->AddOptionFlag('\0', "disable_perceptual_optimizations",
+                           "Disable perceptual optimizations",
+                           &disable_perceptual_optimizations, &SetBooleanTrue,
+                           4);
+
     cmdline->AddHelpText("\nModular mode options:", 4);
 
     // modular mode options
@@ -516,6 +510,7 @@ struct CompressArgs {
   jxl::Override noise = jxl::Override::kDefault;
 
   bool allow_expert_options = false;
+  bool disable_perceptual_optimizations = false;
 
   size_t faster_decoding = 0;
   int64_t resampling = -1;
@@ -623,7 +618,7 @@ void ProcessFlag(
   std::string error = flag_check(flag_value);
   if (!error.empty()) {
     std::cerr << "Invalid flag value for --" << flag_name << ": " << error
-              << std::endl;
+              << "\n";
     exit(EXIT_FAILURE);
   }
   params->options.emplace_back(
@@ -648,19 +643,17 @@ void SetDistanceFromFlags(CommandLineParser* cmdline, CompressArgs* args,
   bool quality_set = cmdline->GetOption(args->opt_quality_id)->matched();
   if ((distance_set && (args->distance != 0.0)) && args->lossless_jpeg) {
     std::cerr << "Must not set non-zero distance in combination with "
-                 "--lossless_jpeg=1, which is set by default."
-              << std::endl;
+                 "--lossless_jpeg=1, which is set by default.\n";
     exit(EXIT_FAILURE);
   }
   if ((quality_set && (args->quality != 100)) && args->lossless_jpeg) {
     std::cerr << "Must not set quality below 100 in combination with "
-                 "--lossless_jpeg=1, which is set by default"
-              << std::endl;
+                 "--lossless_jpeg=1, which is set by default.\n";
     exit(EXIT_FAILURE);
   }
   if (quality_set) {
     if (distance_set) {
-      std::cerr << "Must not set both --distance and --quality." << std::endl;
+      std::cerr << "Must not set both --distance and --quality.\n";
       exit(EXIT_FAILURE);
     }
     args->distance = JxlEncoderDistanceFromQuality(args->quality);
@@ -694,6 +687,9 @@ void ProcessFlags(const jxl::extras::Codec codec,
   ProcessBoolFlag(args->noise, JXL_ENC_FRAME_SETTING_NOISE, params);
 
   params->allow_expert_options = args->allow_expert_options;
+  if (args->disable_perceptual_optimizations) {
+    params->AddOption(JXL_ENC_FRAME_SETTING_DISABLE_PERCEPTUAL_HEURISTICS, 1);
+  }
 
   if (!args->frame_indexing.empty()) {
     bool must_be_all_zeros = args->frame_indexing[0] != '1';
@@ -701,14 +697,12 @@ void ProcessFlags(const jxl::extras::Codec codec,
       if (c == '1') {
         if (must_be_all_zeros) {
           std::cerr << "Invalid --frame_indexing. If the first character is "
-                       "'0', all must be '0'."
-                    << std::endl;
+                       "'0', all must be '0'.\n";
           exit(EXIT_FAILURE);
         }
       } else if (c != '0') {
         std::cerr << "Invalid --frame_indexing. Must match the pattern "
-                     "'^(0*|1[01]*)$'."
-                  << std::endl;
+                     "'^(0*|1[01]*)$'.\n";
         exit(EXIT_FAILURE);
       }
     }
@@ -766,7 +760,7 @@ void ProcessFlags(const jxl::extras::Codec codec,
   if (args->group_order != jxl::Override::kOn &&
       (args->center_x != -1 || args->center_y != -1)) {
     std::cerr << "Invalid flag combination. Setting --center_x or --center_y "
-              << "requires setting --group_order=1" << std::endl;
+              << "requires setting --group_order=1.\n";
     exit(EXIT_FAILURE);
   }
   ProcessFlag("center_x", args->center_x,
@@ -895,8 +889,7 @@ void ProcessFlags(const jxl::extras::Codec codec,
 
   if (args->num_threads < -1) {
     std::cerr
-        << "Invalid flag value for --num_threads: must be -1, 0 or positive."
-        << std::endl;
+        << "Invalid flag value for --num_threads: must be -1, 0 or positive.\n";
     exit(EXIT_FAILURE);
   }
   // JPEG specific options.
@@ -923,10 +916,6 @@ void ProcessFlags(const jxl::extras::Codec codec,
   params->premultiply = args->premultiply;
   params->compress_boxes = args->compress_boxes != jxl::Override::kOff;
   params->upsampling_mode = args->upsampling_mode;
-  if (codec == jxl::extras::Codec::kPNM &&
-      ppf.info.exponent_bits_per_sample == 0) {
-    params->input_bitdepth.type = JXL_BIT_DEPTH_FROM_CODESTREAM;
-  }
 
   // If a metadata field is set to an empty value, it is stripped.
   // Make sure we also strip it when the input image is read with AddJPEGFrame
@@ -944,7 +933,7 @@ void ProcessFlags(const jxl::extras::Codec codec,
 
 struct JxlOutputProcessor {
   bool SetOutputPath(const std::string& path) {
-    outfile.reset(new FileWrapper(path, "wb"));
+    outfile = jxl::make_unique<FileWrapper>(path, "wb");
     if (!*outfile) {
       fprintf(stderr,
               "Could not open %s for writing\n"
@@ -979,7 +968,7 @@ struct JxlOutputProcessor {
     output.clear();
   }
 
-  void Seek(uint64_t position) {
+  void Seek(uint64_t position) {  // NOLINT
     if (*outfile && fseek(*outfile, position, SEEK_SET) != 0) {
       JXL_WARNING("Failed to seek output.");
     }
@@ -1026,8 +1015,7 @@ int main(int argc, char** argv) {
 
   if (!args.file_out && !args.disable_output) {
     std::cerr
-        << "No output file specified and --disable_output flag not passed."
-        << std::endl;
+        << "No output file specified and --disable_output flag not passed.\n";
     exit(EXIT_FAILURE);
   }
 
@@ -1044,31 +1032,41 @@ int main(int argc, char** argv) {
   size_t input_bytes = 0;
   double decode_mps = 0;
   size_t pixels = 0;
+  bool try_non_streaming = true;
   jxl::extras::ChunkedPNMDecoder pnm_dec;
   if (args.streaming_input) {
-    auto dec = jxl::extras::ChunkedPNMDecoder::Init(args.file_in);
-    if (!dec.ok()) {
-      std::cerr << "PNM decoding failed." << std::endl;
-      exit(EXIT_FAILURE);
+    bool ok = [&]() -> jxl::Status {
+      JXL_ASSIGN_OR_RETURN(pnm_dec,
+                           jxl::extras::ChunkedPNMDecoder::Init(args.file_in));
+      return true;
+    }();
+    if (!ok) {
+      std::cerr << "Warning PPM/PGM streaming decoding failed, trying "
+                   "non-streaming mode.\n";
+    } else {  // ok
+      if (!pnm_dec.InitializePPF(args.color_hints_proxy.target, &ppf)) {
+        std::cerr
+            << "Failed to initialize decoding with the given color hints\n";
+        exit(EXIT_FAILURE);
+      }
+      codec = jxl::extras::Codec::kPNM;
+      args.lossless_jpeg = JXL_FALSE;
+      pixels = ppf.info.xsize * ppf.info.ysize;
+      try_non_streaming = false;
     }
-    pnm_dec = std::move(dec).value();
-    JXL_RETURN_IF_ERROR(
-        pnm_dec.InitializePPF(args.color_hints_proxy.target, &ppf));
-    codec = jxl::extras::Codec::kPNM;
-    args.lossless_jpeg = JXL_FALSE;
-    pixels = ppf.info.xsize * ppf.info.ysize;
-  } else {
+  }
+  if (try_non_streaming) {
     // Loading the input.
     // Depending on flags-settings, we want to either load a JPEG and
     // faithfully convert it to JPEG XL, or load (JPEG or non-JPEG)
     // pixel data.
     jpegxl::tools::FileWrapper f(args.file_in, "rb");
     if (!f) {
-      std::cerr << "Reading image data failed." << std::endl;
+      std::cerr << "Reading image data failed.\n";
       exit(EXIT_FAILURE);
     }
     if (!jpegxl::tools::ReadFile(f, &image_data)) {
-      std::cerr << "Reading image data failed." << std::endl;
+      std::cerr << "Reading image data failed.\n";
       exit(EXIT_FAILURE);
     }
     input_bytes = image_data.size();
@@ -1081,11 +1079,11 @@ int main(int argc, char** argv) {
           &codec);
 
       if (!status) {
-        std::cerr << "Getting pixel data failed." << std::endl;
+        std::cerr << "Getting pixel data failed.\n";
         exit(EXIT_FAILURE);
       }
       if (ppf.frames.empty()) {
-        std::cerr << "No frames on input file." << std::endl;
+        std::cerr << "No frames on input file.\n";
         exit(EXIT_FAILURE);
       }
       pixels = ppf.info.xsize * ppf.info.ysize;
@@ -1096,8 +1094,7 @@ int main(int argc, char** argv) {
     if (FROM_JXL_BOOL(args.lossless_jpeg) && jpegxl::tools::IsJPG(image_data)) {
       if (!cmdline.GetOption(args.opt_lossless_jpeg_id)->matched()) {
         std::cerr << "Note: Implicit-default for JPEG is lossless-transcoding. "
-                  << "To silence this message, set --lossless_jpeg=(1|0)."
-                  << std::endl;
+                  << "To silence this message, set --lossless_jpeg=(1|0).\n";
       }
       jpeg_bytes = &image_data;
       if (args.allow_jpeg_reconstruction) {
@@ -1110,8 +1107,7 @@ int main(int argc, char** argv) {
                   << "Cannot strip " << key
                   << " metadata, try setting --allow_jpeg_reconstruction=0. "
                      "Note that with that setting byte exact reconstruction "
-                     "of the JPEG file won't be possible."
-                  << std::endl;
+                     "of the JPEG file won't be possible.\n";
               exit(EXIT_FAILURE);
             }
           }
@@ -1132,7 +1128,8 @@ int main(int argc, char** argv) {
   }
 
   if (!ppf.metadata.exif.empty() || !ppf.metadata.xmp.empty() ||
-      !ppf.metadata.jumbf.empty() || !ppf.metadata.iptc.empty() ||
+      !ppf.metadata.jhgm.empty() || !ppf.metadata.jumbf.empty() ||
+      !ppf.metadata.iptc.empty() ||
       (FROM_JXL_BOOL(args.lossless_jpeg) &&
        FROM_JXL_BOOL(args.allow_jpeg_reconstruction))) {
     if (args.container == jxl::Override::kDefault) {
@@ -1143,6 +1140,7 @@ int main(int argc, char** argv) {
       ppf.metadata.exif.clear();
       ppf.metadata.xmp.clear();
       ppf.metadata.jumbf.clear();
+      ppf.metadata.jhgm.clear();
       ppf.metadata.iptc.clear();
       args.allow_jpeg_reconstruction = JXL_FALSE;
     }
@@ -1195,7 +1193,7 @@ int main(int argc, char** argv) {
 
   if (!args.streaming_output && have_file_out && !args.disable_output) {
     if (!jpegxl::tools::WriteFile(args.file_out, compressed)) {
-      std::cerr << "Could not write jxl file." << std::endl;
+      std::cerr << "Could not write jxl file.\n";
       return EXIT_FAILURE;
     }
   }
@@ -1217,7 +1215,7 @@ int main(int argc, char** argv) {
           static_cast<double>(compressed_size * jxl::kBitsPerByte) / pixels;
       cmdline.VerbosePrintf(0, "(%.3f bpp%s).\n", bpp / ppf.num_frames(),
                             ppf.num_frames() == 1 ? "" : "/frame");
-      JXL_CHECK(stats.Print(num_worker_threads));
+      JPEGXL_TOOLS_CHECK(stats.Print(num_worker_threads));
     } else {
       cmdline.VerbosePrintf(0, "\n");
     }

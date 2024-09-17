@@ -3,26 +3,38 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+#include <jxl/color_encoding.h>
 #include <jxl/encode.h>
 #include <jxl/encode_cxx.h>
+#include <jxl/memory_manager.h>
 #include <jxl/thread_parallel_runner.h>
 #include <jxl/thread_parallel_runner_cxx.h>
 #include <jxl/types.h>
-#include <limits.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <hwy/targets.h>
-#include <random>
 #include <vector>
 
-#include "lib/jxl/base/status.h"
+#include "jxl/codestream_header.h"
+#include "lib/jxl/base/compiler_specific.h"
+#include "lib/jxl/fuzztest.h"
 #include "lib/jxl/test_image.h"
+#include "tools/tracking_memory_manager.h"
 
 namespace {
+
+using ::jpegxl::tools::kGiB;
+using ::jpegxl::tools::TrackingMemoryManager;
+
+void Check(bool ok) {
+  if (!ok) {
+    JXL_CRASH();
+  }
+}
 
 #define TRY(expr)                                \
   do {                                           \
@@ -53,13 +65,13 @@ struct FuzzSpec {
   size_t output_buffer_size = 1;
 };
 
-bool EncodeJpegXl(const FuzzSpec& spec) {
+bool EncodeJpegXl(const FuzzSpec& spec, JxlMemoryManager* memory_manager) {
   // Multi-threaded parallel runner. Limit to max 2 threads since the fuzzer
   // itself is already multithreaded.
   size_t num_threads =
       std::min<size_t>(2, JxlThreadParallelRunnerDefaultNumWorkerThreads());
-  auto runner = JxlThreadParallelRunnerMake(nullptr, num_threads);
-  JxlEncoderPtr enc_ptr = JxlEncoderMake(/*memory_manager=*/nullptr);
+  auto runner = JxlThreadParallelRunnerMake(memory_manager, num_threads);
+  JxlEncoderPtr enc_ptr = JxlEncoderMake(memory_manager);
   JxlEncoder* enc = enc_ptr.get();
   for (size_t num_rep = 0; num_rep < 2; ++num_rep) {
     JxlEncoderReset(enc);
@@ -138,7 +150,7 @@ T Select(const std::vector<T>& vec,
   return vec[get_index(vec.size() - 1)];
 }
 
-int TestOneInput(const uint8_t* data, size_t size) {
+int DoTestOneInput(const uint8_t* data, size_t size) {
   uint64_t flags = 0;
   size_t flag_bits = 0;
 
@@ -220,10 +232,13 @@ int TestOneInput(const uint8_t* data, size_t size) {
   spec.color_encoding.rendering_intent = Select(rendering_intents, get_flag);
   spec.output_buffer_size = get_flag(4095) + 1;
 
+  TrackingMemoryManager memory_manager{/* cap */ 1 * kGiB,
+                                       /* total_cap */ 5 * kGiB};
   const auto targets = hwy::SupportedAndGeneratedTargets();
   hwy::SetSupportedTargetsForTest(Select(targets, get_flag));
-  EncodeJpegXl(spec);
+  EncodeJpegXl(spec, memory_manager.get());
   hwy::SetSupportedTargetsForTest(0);
+  Check(memory_manager.Reset());
 
   return 0;
 }
@@ -231,5 +246,11 @@ int TestOneInput(const uint8_t* data, size_t size) {
 }  // namespace
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
-  return TestOneInput(data, size);
+  return DoTestOneInput(data, size);
 }
+
+void TestOneInput(const std::vector<uint8_t>& data) {
+  DoTestOneInput(data.data(), data.size());
+}
+
+FUZZ_TEST(CjxlFuzzTest, TestOneInput);

@@ -8,19 +8,23 @@
 
 #include "tools/ssimulacra.h"
 
+#include <jxl/memory_manager.h>
+
 #include <cmath>
 
 #include "lib/jxl/base/status.h"
 #include "lib/jxl/image.h"
 #include "lib/jxl/image_ops.h"
 #include "tools/gauss_blur.h"
+#include "tools/no_memory_manager.h"
 
 namespace ssimulacra {
 namespace {
 
-using jxl::Image3F;
-using jxl::ImageF;
-using jxl::StatusOr;
+using ::jxl::Image3F;
+using ::jxl::ImageF;
+using ::jxl::Status;
+using ::jxl::StatusOr;
 
 const float kC1 = 0.0001f;
 const float kC2 = 0.0004f;
@@ -59,7 +63,9 @@ inline void Rgb2Lab(float r, float g, float b, float* L, float* A, float* B) {
 }
 
 StatusOr<Image3F> Rgb2Lab(const Image3F& in) {
-  JXL_ASSIGN_OR_RETURN(Image3F out, Image3F::Create(in.xsize(), in.ysize()));
+  JxlMemoryManager* memory_manager = jpegxl::tools::NoMemoryManager();
+  JXL_ASSIGN_OR_RETURN(Image3F out,
+                       Image3F::Create(memory_manager, in.xsize(), in.ysize()));
   for (size_t y = 0; y < in.ysize(); ++y) {
     const float* JXL_RESTRICT row_in0 = in.PlaneRow(0, y);
     const float* JXL_RESTRICT row_in1 = in.PlaneRow(1, y);
@@ -77,9 +83,11 @@ StatusOr<Image3F> Rgb2Lab(const Image3F& in) {
 }
 
 StatusOr<Image3F> Downsample(const Image3F& in, size_t fx, size_t fy) {
+  JxlMemoryManager* memory_manager = jpegxl::tools::NoMemoryManager();
   const size_t out_xsize = (in.xsize() + fx - 1) / fx;
   const size_t out_ysize = (in.ysize() + fy - 1) / fy;
-  JXL_ASSIGN_OR_RETURN(Image3F out, Image3F::Create(out_xsize, out_ysize));
+  JXL_ASSIGN_OR_RETURN(Image3F out,
+                       Image3F::Create(memory_manager, out_xsize, out_ysize));
   const float normalize = 1.0f / (fx * fy);
   for (size_t c = 0; c < 3; ++c) {
     for (size_t oy = 0; oy < out_ysize; ++oy) {
@@ -171,34 +179,39 @@ void EdgeDiffMap(const Image3F& img1, const Image3F& mu1, const Image3F& img2,
 class Blur {
  public:
   static StatusOr<Blur> Create(const size_t xsize, const size_t ysize) {
+    JxlMemoryManager* memory_manager = jpegxl::tools::NoMemoryManager();
     Blur result;
-    JXL_ASSIGN_OR_RETURN(result.temp_, ImageF::Create(xsize, ysize));
+    JXL_ASSIGN_OR_RETURN(result.temp_,
+                         ImageF::Create(memory_manager, xsize, ysize));
     return result;
   }
 
-  void operator()(const ImageF& in, ImageF* JXL_RESTRICT out) {
-    FastGaussian(
+  Status BlurPlane(const ImageF& in, ImageF* JXL_RESTRICT out) {
+    JXL_RETURN_IF_ERROR(FastGaussian(
         rg_, in.xsize(), in.ysize(), [&](size_t y) { return in.ConstRow(y); },
         [&](size_t y) { return temp_.Row(y); },
-        [&](size_t y) { return out->Row(y); });
+        [&](size_t y) { return out->Row(y); }));
+    return true;
   }
 
   StatusOr<Image3F> operator()(const Image3F& in) {
-    JXL_ASSIGN_OR_RETURN(Image3F out, Image3F::Create(in.xsize(), in.ysize()));
-    operator()(in.Plane(0), &out.Plane(0));
-    operator()(in.Plane(1), &out.Plane(1));
-    operator()(in.Plane(2), &out.Plane(2));
+    JxlMemoryManager* memory_manager = jpegxl::tools::NoMemoryManager();
+    JXL_ASSIGN_OR_RETURN(
+        Image3F out, Image3F::Create(memory_manager, in.xsize(), in.ysize()));
+    JXL_RETURN_IF_ERROR(BlurPlane(in.Plane(0), &out.Plane(0)));
+    JXL_RETURN_IF_ERROR(BlurPlane(in.Plane(1), &out.Plane(1)));
+    JXL_RETURN_IF_ERROR(BlurPlane(in.Plane(2), &out.Plane(2)));
     return out;
   }
 
   // Allows reusing across scales.
-  void ShrinkTo(const size_t xsize, const size_t ysize) {
-    temp_.ShrinkTo(xsize, ysize);
+  Status ShrinkTo(const size_t xsize, const size_t ysize) {
+    return temp_.ShrinkTo(xsize, ysize);
   }
 
  private:
   Blur() : rg_(jxl::CreateRecursiveGaussian(1.5)) {}
-  hwy::AlignedUniquePtr<jxl::RecursiveGaussian> rg_;
+  jxl::RecursiveGaussian rg_;
   ImageF temp_;
 };
 
@@ -280,14 +293,15 @@ void Ssimulacra::PrintDetails() const {
 
 StatusOr<Ssimulacra> ComputeDiff(const Image3F& orig, const Image3F& distorted,
                                  bool simple) {
+  JxlMemoryManager* memory_manager = jpegxl::tools::NoMemoryManager();
   Ssimulacra ssimulacra;
 
   ssimulacra.simple = simple;
   JXL_ASSIGN_OR_RETURN(Image3F img1, Rgb2Lab(orig));
   JXL_ASSIGN_OR_RETURN(Image3F img2, Rgb2Lab(distorted));
 
-  JXL_ASSIGN_OR_RETURN(Image3F mul,
-                       Image3F::Create(orig.xsize(), orig.ysize()));
+  JXL_ASSIGN_OR_RETURN(
+      Image3F mul, Image3F::Create(memory_manager, orig.xsize(), orig.ysize()));
   JXL_ASSIGN_OR_RETURN(Blur blur, Blur::Create(img1.xsize(), img1.ysize()));
 
   for (int scale = 0; scale < kNumScales; scale++) {
@@ -298,8 +312,8 @@ StatusOr<Ssimulacra> ComputeDiff(const Image3F& orig, const Image3F& distorted,
       JXL_ASSIGN_OR_RETURN(img1, Downsample(img1, 2, 2));
       JXL_ASSIGN_OR_RETURN(img2, Downsample(img2, 2, 2));
     }
-    mul.ShrinkTo(img1.xsize(), img2.ysize());
-    blur.ShrinkTo(img1.xsize(), img2.ysize());
+    JXL_RETURN_IF_ERROR(mul.ShrinkTo(img1.xsize(), img2.ysize()));
+    JXL_RETURN_IF_ERROR(blur.ShrinkTo(img1.xsize(), img2.ysize()));
 
     Multiply(img1, img1, &mul);
     JXL_ASSIGN_OR_RETURN(Image3F sigma1_sq, blur(mul));

@@ -4,15 +4,16 @@
 // license that can be found in the LICENSE file.
 
 #include <jxl/cms.h>
+#include <jxl/cms_interface.h>
+#include <jxl/memory_manager.h>
 #include <jxl/types.h>
-#include <stdint.h>
-#include <stdio.h>
 
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <vector>
 
-#include "jxl/cms_interface.h"
 #include "lib/extras/codec.h"
 #include "lib/extras/dec/color_hints.h"
 #include "lib/extras/metrics.h"
@@ -25,28 +26,31 @@
 #include "lib/jxl/codec_in_out.h"
 #include "lib/jxl/color_encoding_internal.h"
 #include "lib/jxl/enc_butteraugli_comparator.h"
+#include "lib/jxl/enc_comparator.h"
 #include "lib/jxl/image.h"
 #include "tools/file_io.h"
+#include "tools/no_memory_manager.h"
 #include "tools/thread_pool_internal.h"
 
 namespace {
 
-using jpegxl::tools::ThreadPoolInternal;
-using jxl::ButteraugliParams;
-using jxl::CodecInOut;
-using jxl::Image3F;
-using jxl::ImageF;
-using jxl::JxlButteraugliComparator;
-using jxl::Status;
+using ::jpegxl::tools::ThreadPoolInternal;
+using ::jxl::ButteraugliParams;
+using ::jxl::CodecInOut;
+using ::jxl::Image3F;
+using ::jxl::ImageF;
+using ::jxl::JxlButteraugliComparator;
+using ::jxl::Status;
 
 Status WriteImage(const Image3F& image, const std::string& filename) {
   ThreadPoolInternal pool(4);
   JxlPixelFormat format = {3, JXL_TYPE_UINT8, JXL_LITTLE_ENDIAN, 0};
-  jxl::extras::PackedPixelFile ppf =
+  JXL_ASSIGN_OR_RETURN(
+      jxl::extras::PackedPixelFile ppf,
       jxl::extras::ConvertImage3FToPackedPixelFile(
-          image, jxl::ColorEncoding::SRGB(), format, &pool);
+          image, jxl::ColorEncoding::SRGB(), format, pool.get()));
   std::vector<uint8_t> encoded;
-  return jxl::Encode(ppf, filename, &encoded, &pool) &&
+  return jxl::Encode(ppf, filename, &encoded, pool.get()) &&
          jpegxl::tools::WriteFile(filename, encoded);
 }
 
@@ -55,13 +59,17 @@ Status RunButteraugli(const char* pathname1, const char* pathname2,
                       const std::string& raw_distmap_filename,
                       const std::string& colorspace_hint, double p,
                       float intensity_target) {
+  JxlMemoryManager* memory_manager = jpegxl::tools::NoMemoryManager();
   jxl::extras::ColorHints color_hints;
   if (!colorspace_hint.empty()) {
     color_hints.Add("color_space", colorspace_hint);
   }
 
   const char* pathname[2] = {pathname1, pathname2};
-  CodecInOut io[2];
+  CodecInOut io1{memory_manager};
+  CodecInOut io2{memory_manager};
+
+  CodecInOut* io[2] = {&io1, &io2};
   ThreadPoolInternal pool(4);
   for (size_t i = 0; i < 2; ++i) {
     std::vector<uint8_t> encoded;
@@ -69,14 +77,13 @@ Status RunButteraugli(const char* pathname1, const char* pathname2,
       fprintf(stderr, "Failed to read image from %s\n", pathname[i]);
       return false;
     }
-    if (!jxl::SetFromBytes(jxl::Bytes(encoded), color_hints, &io[i], &pool)) {
+    if (!jxl::SetFromBytes(jxl::Bytes(encoded), color_hints, io[i],
+                           pool.get())) {
       fprintf(stderr, "Failed to decode image from %s\n", pathname[i]);
       return false;
     }
   }
 
-  CodecInOut& io1 = io[0];
-  CodecInOut& io2 = io[1];
   if (io1.xsize() != io2.xsize()) {
     fprintf(stderr, "Width mismatch: %" PRIuS " %" PRIuS "\n", io1.xsize(),
             io2.xsize());
@@ -89,31 +96,31 @@ Status RunButteraugli(const char* pathname1, const char* pathname2,
   }
 
   ImageF distmap;
-  ButteraugliParams ba_params;
-  ba_params.hf_asymmetry = 1.0f;
-  ba_params.xmul = 1.0f;
-  ba_params.intensity_target = intensity_target;
+  ButteraugliParams butteraugli_params;
+  butteraugli_params.hf_asymmetry = 1.0f;
+  butteraugli_params.xmul = 1.0f;
+  butteraugli_params.intensity_target = intensity_target;
   const JxlCmsInterface& cms = *JxlGetDefaultCms();
-  JxlButteraugliComparator comparator(ba_params, cms);
+  JxlButteraugliComparator comparator(butteraugli_params, cms);
   float distance;
-  JXL_CHECK(ComputeScore(io1.Main(), io2.Main(), &comparator, cms, &distance,
-                         &distmap, &pool,
-                         /* ignore_alpha */ false));
+  JXL_RETURN_IF_ERROR(ComputeScore(io1.Main(), io2.Main(), &comparator, cms,
+                                   &distance, &distmap, pool.get(),
+                                   /* ignore_alpha */ false));
   printf("%.10f\n", distance);
 
-  double pnorm = jxl::ComputeDistanceP(distmap, ba_params, p);
+  double pnorm = jxl::ComputeDistanceP(distmap, butteraugli_params, p);
   printf("%g-norm: %f\n", p, pnorm);
 
   if (!distmap_filename.empty()) {
     float good = jxl::ButteraugliFuzzyInverse(1.5);
     float bad = jxl::ButteraugliFuzzyInverse(0.5);
-    JXL_ASSIGN_OR_DIE(Image3F heatmap,
-                      jxl::CreateHeatMapImage(distmap, good, bad));
-    JXL_CHECK(WriteImage(heatmap, distmap_filename));
+    JXL_ASSIGN_OR_RETURN(Image3F heatmap,
+                         jxl::CreateHeatMapImage(distmap, good, bad));
+    JXL_RETURN_IF_ERROR(WriteImage(heatmap, distmap_filename));
   }
   if (!raw_distmap_filename.empty()) {
     FILE* out = fopen(raw_distmap_filename.c_str(), "wb");
-    JXL_CHECK(out != nullptr);
+    JXL_ENSURE(out != nullptr);
     fprintf(out, "Pf\n%" PRIuS " %" PRIuS "\n-1.0\n", distmap.xsize(),
             distmap.ysize());
     for (size_t y = distmap.ysize(); y-- > 0;) {
@@ -172,5 +179,5 @@ int main(int argc, char** argv) {
 
   Status result = RunButteraugli(argv[1], argv[2], distmap, raw_distmap,
                                  colorspace, p, intensity_target);
-  return result ? 1 : 0;
+  return result ? EXIT_SUCCESS : EXIT_FAILURE;
 }

@@ -3,28 +3,38 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+#include <jxl/codestream_header.h>
+#include <jxl/color_encoding.h>
 #include <jxl/decode.h>
 #include <jxl/decode_cxx.h>
 #include <jxl/encode.h>
 #include <jxl/encode_cxx.h>
 #include <jxl/thread_parallel_runner.h>
 #include <jxl/thread_parallel_runner_cxx.h>
-#include <limits.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
+#include <jxl/types.h>
 
-#include <algorithm>
 #include <cstdint>
-#include <functional>
-#include <hwy/targets.h>
-#include <random>
+#include <cstdlib>
+#include <cstring>
 #include <vector>
 
+#include "lib/jxl/base/compiler_specific.h"
 #include "lib/jxl/base/status.h"
-#include "lib/jxl/test_image.h"
+#include "lib/jxl/fuzztest.h"
+#include "tools/tracking_memory_manager.h"
 
 namespace {
+
+using ::jpegxl::tools::kGiB;
+using ::jpegxl::tools::TrackingMemoryManager;
+using ::jxl::Status;
+using ::jxl::StatusOr;
+
+void Check(bool ok) {
+  if (!ok) {
+    JXL_CRASH();
+  }
+}
 
 struct FuzzSpec {
   uint32_t xsize;
@@ -41,7 +51,7 @@ struct FuzzSpec {
   };
 
   std::vector<IntOptionSpec> int_options = {
-      IntOptionSpec{JXL_ENC_FRAME_SETTING_EFFORT, 1, 9, 0},
+      IntOptionSpec{JXL_ENC_FRAME_SETTING_EFFORT, 1, 7, 0},
       IntOptionSpec{JXL_ENC_FRAME_SETTING_DECODING_SPEED, 0, 4, 0},
       IntOptionSpec{JXL_ENC_FRAME_SETTING_NOISE, -1, 1, 0},
       IntOptionSpec{JXL_ENC_FRAME_SETTING_DOTS, -1, 1, 0},
@@ -111,10 +121,9 @@ struct FuzzSpec {
     // constants chosen so to cover the entire 0.01 - 25 range.
     spec.distance = u8() % 2 ? 0.0 : 0.01 + 0.00038132 * u16();
 
-    JXL_CHECK(spec.float_options[2].flag ==
-              JXL_ENC_FRAME_SETTING_MODULAR_MA_TREE_LEARNING_PERCENT);
-    JXL_CHECK(spec.int_options[15].flag ==
-              JXL_ENC_FRAME_SETTING_COLOR_TRANSFORM);
+    Check(spec.float_options[2].flag ==
+          JXL_ENC_FRAME_SETTING_MODULAR_MA_TREE_LEARNING_PERCENT);
+    Check(spec.int_options[15].flag == JXL_ENC_FRAME_SETTING_COLOR_TRANSFORM);
     if (spec.distance != 0 || spec.int_options[15].value == 0) {
       spec.float_options[2].possible_values[1] = 1;
     }
@@ -140,33 +149,35 @@ struct FuzzSpec {
   }
 };
 
-std::vector<uint8_t> Encode(const FuzzSpec& spec, bool streaming) {
+StatusOr<std::vector<uint8_t>> Encode(const FuzzSpec& spec,
+                                      TrackingMemoryManager& memory_manager,
+                                      bool streaming) {
   auto runner = JxlThreadParallelRunnerMake(nullptr, spec.num_threads);
-  JxlEncoderPtr enc_ptr = JxlEncoderMake(/*memory_manager=*/nullptr);
+  JxlEncoderPtr enc_ptr = JxlEncoderMake(memory_manager.get());
   JxlEncoder* enc = enc_ptr.get();
 
-  JXL_CHECK(JxlEncoderSetParallelRunner(enc, JxlThreadParallelRunner,
-                                        runner.get()) == JXL_ENC_SUCCESS);
+  Check(JxlEncoderSetParallelRunner(enc, JxlThreadParallelRunner,
+                                    runner.get()) == JXL_ENC_SUCCESS);
   JxlEncoderFrameSettings* frame_settings =
       JxlEncoderFrameSettingsCreate(enc, nullptr);
 
-  JXL_CHECK(JxlEncoderSetFrameDistance(frame_settings, spec.distance) ==
-            JXL_ENC_SUCCESS);
+  Check(JxlEncoderSetFrameDistance(frame_settings, spec.distance) ==
+        JXL_ENC_SUCCESS);
 
   for (const auto& opt : spec.int_options) {
-    JXL_CHECK(JxlEncoderFrameSettingsSetOption(frame_settings, opt.flag,
-                                               opt.value) == JXL_ENC_SUCCESS);
+    Check(JxlEncoderFrameSettingsSetOption(frame_settings, opt.flag,
+                                           opt.value) == JXL_ENC_SUCCESS);
   }
   for (const auto& opt : spec.float_options) {
     if (opt.value != -1) {
-      JXL_CHECK(JxlEncoderFrameSettingsSetFloatOption(
-                    frame_settings, opt.flag, opt.value) == JXL_ENC_SUCCESS);
+      Check(JxlEncoderFrameSettingsSetFloatOption(
+                frame_settings, opt.flag, opt.value) == JXL_ENC_SUCCESS);
     }
   }
 
-  JXL_CHECK(JxlEncoderFrameSettingsSetOption(
-                frame_settings, JXL_ENC_FRAME_SETTING_BUFFERING,
-                streaming ? 3 : 0) == JXL_ENC_SUCCESS);
+  Check(JxlEncoderFrameSettingsSetOption(frame_settings,
+                                         JXL_ENC_FRAME_SETTING_BUFFERING,
+                                         streaming ? 3 : 0) == JXL_ENC_SUCCESS);
 
   JxlBasicInfo basic_info;
   JxlEncoderInitBasicInfo(&basic_info);
@@ -181,7 +192,7 @@ std::vector<uint8_t> Encode(const FuzzSpec& spec, bool streaming) {
     basic_info.alpha_bits = spec.bit_depth;
     basic_info.num_extra_channels = 1;
   }
-  JXL_CHECK(JxlEncoderSetBasicInfo(enc, &basic_info) == JXL_ENC_SUCCESS);
+  Check(JxlEncoderSetBasicInfo(enc, &basic_info) == JXL_ENC_SUCCESS);
   if (spec.alpha) {
     JxlExtraChannelInfo info;
     memset(&info, 0, sizeof(info));
@@ -200,14 +211,13 @@ std::vector<uint8_t> Encode(const FuzzSpec& spec, bool streaming) {
   color_encoding.white_point = JxlWhitePoint::JXL_WHITE_POINT_D65;
   color_encoding.rendering_intent =
       JxlRenderingIntent::JXL_RENDERING_INTENT_RELATIVE;
-  JXL_CHECK(JxlEncoderSetColorEncoding(enc, &color_encoding) ==
-            JXL_ENC_SUCCESS);
+  Check(JxlEncoderSetColorEncoding(enc, &color_encoding) == JXL_ENC_SUCCESS);
 
   JxlFrameHeader frame_header;
   JxlEncoderInitFrameHeader(&frame_header);
   // TODO(szabadka) Add more frame header options.
-  JXL_CHECK(JxlEncoderSetFrameHeader(frame_settings, &frame_header) ==
-            JXL_ENC_SUCCESS);
+  Check(JxlEncoderSetFrameHeader(frame_settings, &frame_header) ==
+        JXL_ENC_SUCCESS);
   JxlPixelFormat pixelformat = {nchan, JXL_TYPE_UINT16, JXL_LITTLE_ENDIAN, 0};
   std::vector<uint16_t> pixels(spec.xsize * static_cast<uint64_t>(spec.ysize) *
                                nchan);
@@ -219,9 +229,15 @@ std::vector<uint8_t> Encode(const FuzzSpec& spec, bool streaming) {
       }
     }
   }
-  JXL_CHECK(JxlEncoderAddImageFrame(frame_settings, &pixelformat, pixels.data(),
-                                    pixels.size() * sizeof(uint16_t)) ==
-            JXL_ENC_SUCCESS);
+  JxlEncoderStatus status =
+      JxlEncoderAddImageFrame(frame_settings, &pixelformat, pixels.data(),
+                              pixels.size() * sizeof(uint16_t));
+  // TODO(eustas): update when API will provide OOM status.
+  if (memory_manager.seen_oom) {
+    // Actually, that is fine.
+    return JXL_FAILURE("OOM");
+  }
+  Check(status == JXL_ENC_SUCCESS);
   JxlEncoderCloseInput(enc);
   // Reading compressed output
   JxlEncoderStatus process_result = JXL_ENC_NEED_MORE_OUTPUT;
@@ -234,18 +250,24 @@ std::vector<uint8_t> Encode(const FuzzSpec& spec, bool streaming) {
     process_result = JxlEncoderProcessOutput(enc, &next_out, &avail_out);
     written = next_out - buf.data();
   }
-  JXL_CHECK(process_result == JXL_ENC_SUCCESS);
+  // TODO(eustas): update when API will provide OOM status.
+  if (memory_manager.seen_oom) {
+    // Actually, that is fine.
+    return JXL_FAILURE("OOM");
+  }
+  Check(process_result == JXL_ENC_SUCCESS);
   buf.resize(written);
 
   return buf;
 }
 
-std::vector<float> Decode(const std::vector<uint8_t>& data) {
+StatusOr<std::vector<float>> Decode(const std::vector<uint8_t>& data,
+                                    TrackingMemoryManager& memory_manager) {
   // Multi-threaded parallel runner.
-  auto dec = JxlDecoderMake(nullptr);
-  JXL_CHECK(JxlDecoderSubscribeEvents(
-                dec.get(), JXL_DEC_BASIC_INFO | JXL_DEC_FULL_IMAGE) ==
-            JXL_DEC_SUCCESS);
+  auto dec = JxlDecoderMake(memory_manager.get());
+  Check(JxlDecoderSubscribeEvents(dec.get(),
+                                  JXL_DEC_BASIC_INFO | JXL_DEC_FULL_IMAGE) ==
+        JXL_DEC_SUCCESS);
 
   JxlBasicInfo info;
   JxlPixelFormat format = {3, JXL_TYPE_FLOAT, JXL_NATIVE_ENDIAN, 0};
@@ -259,40 +281,74 @@ std::vector<float> Decode(const std::vector<uint8_t>& data) {
     JxlDecoderStatus status = JxlDecoderProcessInput(dec.get());
 
     if (status == JXL_DEC_BASIC_INFO) {
-      JXL_CHECK(JxlDecoderGetBasicInfo(dec.get(), &info) == JXL_DEC_SUCCESS);
+      Check(JxlDecoderGetBasicInfo(dec.get(), &info) == JXL_DEC_SUCCESS);
     } else if (status == JXL_DEC_NEED_IMAGE_OUT_BUFFER) {
       size_t buffer_size;
-      JXL_CHECK(JxlDecoderImageOutBufferSize(dec.get(), &format,
-                                             &buffer_size) == JXL_DEC_SUCCESS);
+      Check(JxlDecoderImageOutBufferSize(dec.get(), &format, &buffer_size) ==
+            JXL_DEC_SUCCESS);
       pixels.resize(buffer_size / sizeof(float));
       void* pixels_buffer = static_cast<void*>(pixels.data());
       size_t pixels_buffer_size = pixels.size() * sizeof(float);
-      JXL_CHECK(JxlDecoderSetImageOutBuffer(dec.get(), &format, pixels_buffer,
-                                            pixels_buffer_size) ==
-                JXL_DEC_SUCCESS);
+      Check(JxlDecoderSetImageOutBuffer(dec.get(), &format, pixels_buffer,
+                                        pixels_buffer_size) == JXL_DEC_SUCCESS);
     } else if (status == JXL_DEC_FULL_IMAGE || status == JXL_DEC_SUCCESS) {
       return pixels;
     } else {
+      // TODO(eustas): update when API will provide OOM status.
+      if (memory_manager.seen_oom) {
+        // Actually, that is fine.
+        return JXL_FAILURE("OOM");
+      }
       // Unexpected status
-      JXL_CHECK(false);
+      Check(false);
     }
   }
 }
 
-int TestOneInput(const uint8_t* data, size_t size) {
+Status Run(const FuzzSpec& spec, TrackingMemoryManager& memory_manager) {
+  std::vector<uint8_t> enc_default;
+  std::vector<uint8_t> enc_streaming;
+
+  const auto encode = [&]() -> Status {
+    // It is not clear, which approach eatc more memory.
+    JXL_ASSIGN_OR_RETURN(enc_default, Encode(spec, memory_manager, false));
+    Check(memory_manager.Reset());
+    JXL_ASSIGN_OR_RETURN(enc_streaming, Encode(spec, memory_manager, true));
+    Check(memory_manager.Reset());
+    return true;
+  };
+  // It is fine, if encoder OOMs.
+  if (!encode()) return true;
+
+  // It is NOT OK, it decoder OOMs - it should not consume more than encoder.
+  JXL_ASSIGN_OR_RETURN(auto dec_default, Decode(enc_default, memory_manager));
+  Check(memory_manager.Reset());
+  JXL_ASSIGN_OR_RETURN(auto dec_streaming,
+                       Decode(enc_streaming, memory_manager));
+  Check(memory_manager.Reset());
+
+  Check(dec_default == dec_streaming);
+
+  return true;
+}
+
+int DoTestOneInput(const uint8_t* data, size_t size) {
   auto spec = FuzzSpec::FromData(data, size);
-  auto enc_default = Encode(spec, false);
-  auto enc_streaming = Encode(spec, true);
-  auto dec_default = Decode(enc_default);
-  auto dec_streaming = Decode(enc_streaming);
-  if (dec_default != dec_streaming) {
-    return 1;
-  }
+
+  TrackingMemoryManager memory_manager{/* cap */ 1 * kGiB,
+                                       /* total_cap */ 5 * kGiB};
+  Check(Run(spec, memory_manager));
   return 0;
 }
 
 }  // namespace
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
-  return TestOneInput(data, size);
+  return DoTestOneInput(data, size);
 }
+
+void TestOneInput(const std::vector<uint8_t>& data) {
+  DoTestOneInput(data.data(), data.size());
+}
+
+FUZZ_TEST(StreamingFuzzTest, TestOneInput);

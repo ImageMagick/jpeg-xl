@@ -194,11 +194,7 @@ JXL_THREADS_EXPORT void JxlResizableParallelRunnerDestroy(void* runner_opaque) {
 JXL_THREADS_EXPORT uint32_t
 JxlResizableParallelRunnerSuggestThreads(uint64_t xsize, uint64_t ysize) {
   // ~one thread per group.
-#if defined(__EMSCRIPTEN__)
-  return std::min<uint64_t>(0,
-#else
   return std::min<uint64_t>(std::thread::hardware_concurrency(),
-#endif
                             xsize * ysize / (256 * 256));
 }
 }

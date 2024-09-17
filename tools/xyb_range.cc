@@ -4,8 +4,10 @@
 // license that can be found in the LICENSE file.
 
 #include <jxl/cms.h>
-#include <stdio.h>
+#include <jxl/memory_manager.h>
 
+#include <cstdio>
+#include <cstdlib>
 #include <utility>
 
 #include "lib/jxl/base/compiler_specific.h"
@@ -17,6 +19,8 @@
 #include "lib/jxl/enc_xyb.h"
 #include "lib/jxl/image.h"
 #include "lib/jxl/image_bundle.h"
+#include "tools/cmdline.h"
+#include "tools/no_memory_manager.h"
 
 namespace jpegxl {
 namespace tools {
@@ -30,7 +34,9 @@ using ::jxl::Status;
 using ::jxl::ThreadPool;
 
 Status PrintXybRange() {
-  JXL_ASSIGN_OR_RETURN(Image3F linear, Image3F::Create(1u << 16, 257));
+  JxlMemoryManager* memory_manager = jpegxl::tools::NoMemoryManager();
+  JXL_ASSIGN_OR_RETURN(Image3F linear,
+                       Image3F::Create(memory_manager, 1u << 16, 257));
   for (int b = 0; b < 256; ++b) {
     float* JXL_RESTRICT row0 = linear.PlaneRow(0, b + 1);
     float* JXL_RESTRICT row1 = linear.PlaneRow(1, b + 1);
@@ -44,13 +50,15 @@ Status PrintXybRange() {
       }
     }
   }
-  CodecInOut io;
+  CodecInOut io{memory_manager};
   io.metadata.m.SetUintSamples(8);
   io.metadata.m.color_encoding = ColorEncoding::LinearSRGB();
-  io.SetFromImage(std::move(linear), io.metadata.m.color_encoding);
+  JXL_RETURN_IF_ERROR(
+      io.SetFromImage(std::move(linear), io.metadata.m.color_encoding));
   const ImageBundle& ib = io.Main();
   ThreadPool* null_pool = nullptr;
-  JXL_ASSIGN_OR_RETURN(Image3F opsin, Image3F::Create(ib.xsize(), ib.ysize()));
+  JXL_ASSIGN_OR_RETURN(Image3F opsin,
+                       Image3F::Create(memory_manager, ib.xsize(), ib.ysize()));
   (void)jxl::ToXYB(ib, null_pool, &opsin, *JxlGetDefaultCms());
   for (size_t c = 0; c < 3; ++c) {
     float minval = 1e10f;
@@ -87,4 +95,7 @@ Status PrintXybRange() {
 }  // namespace tools
 }  // namespace jpegxl
 
-int main() { JXL_CHECK(jpegxl::tools::PrintXybRange()); }
+int main() {
+  JPEGXL_TOOLS_CHECK(jpegxl::tools::PrintXybRange());
+  return EXIT_SUCCESS;
+}

@@ -6,9 +6,11 @@
 
 #include <jxl/color_encoding.h>
 #include <jxl/encode.h>
+#include <jxl/memory_manager.h>
 #include <jxl/stats.h>
 #include <jxl/types.h>
 
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -125,8 +127,10 @@ inline bool ParseEffort(const std::string& s, int* out) {
 
 class JxlCodec : public ImageCodec {
  public:
-  explicit JxlCodec(const BenchmarkArgs& args)
-      : ImageCodec(args), stats_(nullptr, JxlEncoderStatsDestroy) {}
+  JxlCodec(const BenchmarkArgs& args, JxlMemoryManager* memory_manager)
+      : ImageCodec(args),
+        memory_manager_(memory_manager),
+        stats_(nullptr, JxlEncoderStatsDestroy) {}
 
   Status ParseParam(const std::string& param) override {
     const std::string kMaxPassesPrefix = "max_passes=";
@@ -247,6 +251,9 @@ class JxlCodec : public ImageCodec {
     } else if (param.substr(0, 16) == "faster_decoding=") {
       val = strtol(param.substr(16).c_str(), nullptr, 10);
       cparams_.AddOption(JXL_ENC_FRAME_SETTING_DECODING_SPEED, val);
+    } else if (param == "noperc") {
+      cparams_.AddOption(JXL_ENC_FRAME_SETTING_DISABLE_PERCEPTUAL_HEURISTICS,
+                         1);
     } else {
       return JXL_FAILURE("Unrecognized param");
     }
@@ -258,6 +265,7 @@ class JxlCodec : public ImageCodec {
                   jpegxl::tools::SpeedStats* speed_stats) override {
     cparams_.runner = pool->runner();
     cparams_.runner_opaque = pool->runner_opaque();
+    cparams_.memory_manager = memory_manager_;
     cparams_.distance = butteraugli_target_;
     cparams_.AddOption(JXL_ENC_FRAME_SETTING_NOISE,
                        static_cast<int>(jxlargs->noise));
@@ -275,8 +283,8 @@ class JxlCodec : public ImageCodec {
       // Reset color transform to default XYB for lossy modular.
       cparams_.AddOption(JXL_ENC_FRAME_SETTING_COLOR_TRANSFORM, -1);
     }
-    std::string debug_prefix;
-    SetDebugImageCallback(filename, &debug_prefix, &cparams_);
+    DebugTicket ticket;
+    JXL_RETURN_IF_ERROR(SetDebugImageCallback(filename, &ticket, &cparams_));
     if (args_.print_more_stats) {
       stats_.reset(JxlEncoderStatsCreate());
       cparams_.stats = stats_.get();
@@ -285,6 +293,7 @@ class JxlCodec : public ImageCodec {
     JXL_RETURN_IF_ERROR(jxl::extras::EncodeImageJXL(
         cparams_, ppf, /*jpeg_bytes=*/nullptr, compressed));
     const double end = jxl::Now();
+    if (ticket.has_error) return false;
     speed_stats->NotifyElapsed(end - start);
     return true;
   }
@@ -295,9 +304,11 @@ class JxlCodec : public ImageCodec {
                     jpegxl::tools::SpeedStats* speed_stats) override {
     dparams_.runner = pool->runner();
     dparams_.runner_opaque = pool->runner_opaque();
-    JxlDataType data_type = uint8_ ? JXL_TYPE_UINT8 : JXL_TYPE_UINT16;
-    dparams_.accepted_formats = {{3, data_type, JXL_LITTLE_ENDIAN, 0},
-                                 {4, data_type, JXL_LITTLE_ENDIAN, 0}};
+    dparams_.memory_manager = memory_manager_;
+    JxlDataType data_type = uint8_ ? JXL_TYPE_UINT8 : JXL_TYPE_FLOAT;
+    for (uint32_t c = 1; c <= 4; ++c) {
+      dparams_.accepted_formats.push_back({c, data_type, JXL_LITTLE_ENDIAN, 0});
+    }
     // By default, the decoder will undo exif orientation, giving an image
     // with identity exif rotation as result. However, the benchmark does
     // not undo exif orientation of the originals, and compares against the
@@ -324,44 +335,68 @@ class JxlCodec : public ImageCodec {
   bool modular_mode_ = false;
   JXLDecompressParams dparams_;
   bool uint8_ = false;
+  JxlMemoryManager* memory_manager_;
   std::unique_ptr<JxlEncoderStats, decltype(JxlEncoderStatsDestroy)*> stats_;
 
  private:
-  void SetDebugImageCallback(const std::string& filename,
-                             std::string* debug_prefix,
-                             JXLCompressParams* cparams) {
-    if (jxlargs->debug_image_dir.empty()) return;
-    *debug_prefix = JoinPath(jxlargs->debug_image_dir, FileBaseName(filename)) +
-                    ".jxl:" + params_ + ".dbg/";
-    JXL_CHECK(MakeDir(*debug_prefix));
-    cparams->debug_image_opaque = debug_prefix;
-    cparams->debug_image = [](void* opaque, const char* label, size_t xsize,
-                              size_t ysize, const JxlColorEncoding* color,
-                              const uint16_t* pixels) {
-      auto encoder = jxl::extras::GetAPNGEncoder();
-      JXL_CHECK(encoder);
-      PackedPixelFile debug_ppf;
-      JxlPixelFormat format{3, JXL_TYPE_UINT16, JXL_BIG_ENDIAN, 0};
-      PackedFrame frame(xsize, ysize, format);
-      memcpy(frame.color.pixels(), pixels, 6 * xsize * ysize);
-      debug_ppf.frames.emplace_back(std::move(frame));
-      debug_ppf.info.xsize = xsize;
-      debug_ppf.info.ysize = ysize;
-      debug_ppf.info.num_color_channels = 3;
-      debug_ppf.info.bits_per_sample = 16;
-      debug_ppf.color_encoding = *color;
-      EncodedImage encoded;
-      JXL_CHECK(encoder->Encode(debug_ppf, &encoded, nullptr));
-      JXL_CHECK(!encoded.bitstreams.empty());
-      std::string* debug_prefix = reinterpret_cast<std::string*>(opaque);
-      std::string fn = *debug_prefix + std::string(label) + ".png";
-      WriteFile(fn, encoded.bitstreams[0]);
-    };
+  struct DebugTicket {
+    std::string debug_prefix;
+    std::atomic<bool> has_error{false};
+  };
+
+  static void DebugCallback(void* opaque, const char* label, size_t xsize,
+                            size_t ysize, const JxlColorEncoding* color,
+                            const uint16_t* pixels) {
+    DebugTicket* ticket = reinterpret_cast<DebugTicket*>(opaque);
+    if (ticket->has_error) return;
+    if (!DebugCallbackImpl(ticket, label, xsize, ysize, color, pixels)) {
+      ticket->has_error = true;
+    }
+  }
+
+  static Status DebugCallbackImpl(DebugTicket* ticket, const char* label,
+                                  size_t xsize, size_t ysize,
+                                  const JxlColorEncoding* color,
+                                  const uint16_t* pixels) {
+    auto encoder = jxl::extras::GetAPNGEncoder();
+    if (!encoder) return JXL_FAILURE("Failed to create APNG encoder");
+    PackedPixelFile debug_ppf;
+    JxlPixelFormat format{3, JXL_TYPE_UINT16, JXL_BIG_ENDIAN, 0};
+    JXL_ASSIGN_OR_RETURN(PackedFrame frame,
+                         PackedFrame::Create(xsize, ysize, format));
+    memcpy(frame.color.pixels(), pixels, 6 * xsize * ysize);
+    debug_ppf.frames.emplace_back(std::move(frame));
+    debug_ppf.info.xsize = xsize;
+    debug_ppf.info.ysize = ysize;
+    debug_ppf.info.num_color_channels = 3;
+    debug_ppf.info.bits_per_sample = 16;
+    debug_ppf.color_encoding = *color;
+    EncodedImage encoded;
+    JXL_RETURN_IF_ERROR(encoder->Encode(debug_ppf, &encoded, nullptr));
+    if (encoded.bitstreams.empty()) {
+      return JXL_FAILURE("Internal logic error");
+    }
+    std::string fn = ticket->debug_prefix + std::string(label) + ".png";
+    WriteFile(fn, encoded.bitstreams[0]);
+    return true;
+  }
+
+  Status SetDebugImageCallback(const std::string& filename, DebugTicket* ticket,
+                               JXLCompressParams* cparams) {
+    if (jxlargs->debug_image_dir.empty()) return true;
+    ticket->debug_prefix =
+        JoinPath(jxlargs->debug_image_dir, FileBaseName(filename)) +
+        ".jxl:" + params_ + ".dbg/";
+    JXL_RETURN_IF_ERROR(MakeDir(ticket->debug_prefix));
+    cparams->debug_image_opaque = ticket;
+    cparams->debug_image = &DebugCallback;
+    return true;
   }
 };
 
-ImageCodec* CreateNewJxlCodec(const BenchmarkArgs& args) {
-  return new JxlCodec(args);
+ImageCodec* CreateNewJxlCodec(const BenchmarkArgs& args,
+                              JxlMemoryManager* memory_manager) {
+  return new JxlCodec(args, memory_manager);
 }
 
 }  // namespace tools

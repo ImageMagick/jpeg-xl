@@ -23,9 +23,7 @@
 #include "lib/extras/alpha_blend.h"
 #include "lib/extras/dec/decode.h"
 #include "lib/extras/dec/jxl.h"
-#include "lib/extras/enc/apng.h"
 #include "lib/extras/enc/encode.h"
-#include "lib/extras/enc/exr.h"
 #include "lib/extras/enc/jpg.h"
 #include "lib/extras/packed_image.h"
 #include "lib/extras/time.h"
@@ -43,19 +41,12 @@ struct DecompressArgs {
 
   void AddCommandLineOptions(CommandLineParser* cmdline) {
     std::string output_help("The output format can be ");
-    if (jxl::extras::GetAPNGEncoder()) {
-      output_help.append("PNG, APNG, ");
-    }
-    if (jxl::extras::GetJPEGEncoder()) {
-      output_help.append("JPEG, ");
-    } else {
-      output_help.append("JPEG (lossless reconstruction only), ");
-    }
-    if (jxl::extras::GetEXREncoder()) {
-      output_help.append("EXR, ");
+    output_help.append(jxl::extras::ListOfEncodeCodecs());
+    if (!jxl::extras::GetJPEGEncoder()) {
+      output_help.append(", JPEG (lossless reconstruction only)");
     }
     output_help.append(
-        "PGM (for greyscale input), PPM (for color input), PNM, PFM, or PAM.\n"
+        "\n"
         "    To extract metadata, use output format EXIF, XMP, or JUMBF.\n"
         "    The format is selected based on extension ('filename.png') or can "
         "be overwritten by using --output_format.\n"
@@ -156,16 +147,18 @@ struct DecompressArgs {
                            "No output file will be written (for benchmarking)",
                            &disable_output, &SetBooleanTrue, 2);
 
-    cmdline->AddOptionFlag('\0', "output_extra_channels",
-                           "If set, all extra channels will be written either "
-                           "as part of the main output file (e.g. alpha "
-                           "channel in png) or as separate output files with "
-                           "suffix -ecN in their names. If not set, the "
-                           "(first) alpha channel will only be written when "
-                           "the output format supports alpha channels and all "
-                           "other extra channels won't be decoded. Files are "
-                           "concatenated when outputting to stdout.",
-                           &output_extra_channels, &SetBooleanTrue, 2);
+    cmdline->AddOptionFlag(
+        '\0', "output_extra_channels",
+        "If set, all extra channels will be written either "
+        "as part of the main output file (e.g. alpha "
+        "channel in png) or as separate output files with "
+        "suffix -ecN in their names. If not set, the "
+        "(first) alpha channel will only be written when "
+        "the output format supports alpha channels and all "
+        "other extra channels won't be decoded. Files are "
+        "concatenated when outputting to stdout. Only has an effect when "
+        "decoding to (A)PNG or PPM/PNM/PFM/PAM",
+        &output_extra_channels, &SetBooleanTrue, 2);
 
     cmdline->AddOptionFlag(
         '\0', "output_frames",
@@ -226,7 +219,7 @@ struct DecompressArgs {
 
   // Validate the passed arguments, checking whether all passed options are
   // compatible. Returns whether the validation was successful.
-  bool ValidateArgs(const CommandLineParser& cmdline) {
+  bool ValidateArgs(const CommandLineParser& cmdline) const {
     if (file_in == nullptr) {
       fprintf(stderr, "Missing INPUT filename.\n");
       return false;
@@ -457,8 +450,7 @@ int main(int argc, const char* argv[]) {
 
   if (!args.file_out && !args.disable_output) {
     std::cerr
-        << "No output file specified and --disable_output flag not passed."
-        << std::endl;
+        << "No output file specified and --disable_output flag not passed.\n";
     return EXIT_FAILURE;
   }
 
@@ -586,7 +578,10 @@ int main(int argc, const char* argv[]) {
           fprintf(stderr, "Invalid background color %s\n",
                   args.background_spec.c_str());
         }
-        AlphaBlend(&ppf, background);
+        if (!AlphaBlend(&ppf, background)) {
+          fprintf(stderr, "AlphaBlend failed\n");
+          return EXIT_FAILURE;
+        }
       }
       std::ostringstream os;
       os << args.jpeg_quality;

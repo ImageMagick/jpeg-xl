@@ -85,11 +85,7 @@ void* JxlThreadParallelRunnerCreate(const JxlMemoryManager* memory_manager,
   if (!alloc) return nullptr;
   // Placement new constructor on allocated memory
   jpegxl::ThreadParallelRunner* runner =
-  #if defined(__EMSCRIPTEN__)
-      new (alloc) jpegxl::ThreadParallelRunner(0);
-  #else
       new (alloc) jpegxl::ThreadParallelRunner(num_worker_threads);
-  #endif
   runner->memory_manager = local_memory_manager;
 
   return runner;
@@ -109,9 +105,5 @@ void JxlThreadParallelRunnerDestroy(void* runner_opaque) {
 // Get default value for num_worker_threads parameter of
 // InitJxlThreadParallelRunner.
 size_t JxlThreadParallelRunnerDefaultNumWorkerThreads() {
-#if defined(__EMSCRIPTEN__)
-  return 0;
-#else
   return std::thread::hardware_concurrency();
-#endif
 }

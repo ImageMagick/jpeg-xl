@@ -34,12 +34,12 @@
 
 #include <jxl/memory_manager.h>
 #include <jxl/parallel_runner.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdlib.h>
 
 #include <atomic>
 #include <condition_variable>  //NOLINT
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
 #include <mutex>               //NOLINT
 #include <thread>              //NOLINT
 #include <vector>
@@ -59,11 +59,7 @@ class ThreadParallelRunner {
   // "num_worker_threads" defaults to one per hyperthread. If zero, all tasks
   // run on the main thread.
   explicit ThreadParallelRunner(
-#if defined(__EMSCRIPTEN__)
-      int num_worker_threads = 0);
-#else
       int num_worker_threads = std::thread::hardware_concurrency());
-#endif
 
   // Waits for all threads to exit.
   ~ThreadParallelRunner();
