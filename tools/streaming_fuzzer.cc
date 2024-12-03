@@ -13,6 +13,7 @@
 #include <jxl/thread_parallel_runner_cxx.h>
 #include <jxl/types.h>
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -51,7 +52,7 @@ struct FuzzSpec {
   };
 
   std::vector<IntOptionSpec> int_options = {
-      IntOptionSpec{JXL_ENC_FRAME_SETTING_EFFORT, 1, 7, 0},
+      IntOptionSpec{JXL_ENC_FRAME_SETTING_EFFORT, 1, 9, 0},
       IntOptionSpec{JXL_ENC_FRAME_SETTING_DECODING_SPEED, 0, 4, 0},
       IntOptionSpec{JXL_ENC_FRAME_SETTING_NOISE, -1, 1, 0},
       IntOptionSpec{JXL_ENC_FRAME_SETTING_DOTS, -1, 1, 0},
@@ -310,7 +311,7 @@ Status Run(const FuzzSpec& spec, TrackingMemoryManager& memory_manager) {
   std::vector<uint8_t> enc_streaming;
 
   const auto encode = [&]() -> Status {
-    // It is not clear, which approach eatc more memory.
+    // It is not clear, which approach eats more memory.
     JXL_ASSIGN_OR_RETURN(enc_default, Encode(spec, memory_manager, false));
     Check(memory_manager.Reset());
     JXL_ASSIGN_OR_RETURN(enc_streaming, Encode(spec, memory_manager, true));
@@ -320,14 +321,27 @@ Status Run(const FuzzSpec& spec, TrackingMemoryManager& memory_manager) {
   // It is fine, if encoder OOMs.
   if (!encode()) return true;
 
-  // It is NOT OK, it decoder OOMs - it should not consume more than encoder.
+  // It is NOT OK, if decoder OOMs - it should not consume more than encoder.
   JXL_ASSIGN_OR_RETURN(auto dec_default, Decode(enc_default, memory_manager));
   Check(memory_manager.Reset());
   JXL_ASSIGN_OR_RETURN(auto dec_streaming,
                        Decode(enc_streaming, memory_manager));
   Check(memory_manager.Reset());
 
-  Check(dec_default == dec_streaming);
+  Check(dec_default.size() == dec_streaming.size());
+  float max_abs_diff = 0.0f;
+  for (size_t i = 0; i < dec_default.size(); ++i) {
+    float abs_diff = std::abs(dec_default[i] - dec_streaming[i]);
+    if (abs_diff > max_abs_diff) {
+      max_abs_diff = abs_diff;
+    }
+  }
+
+  Check(spec.int_options[0].flag == JXL_ENC_FRAME_SETTING_EFFORT);
+  int effort = spec.int_options[0].value;
+  std::array<float, 10> kThreshold = {0.00f, 0.05f, 0.05f, 0.05f, 0.05f,
+                                      0.05f, 0.05f, 0.05f, 0.10f, 0.10f};
+  Check(max_abs_diff <= kThreshold[effort]);
 
   return true;
 }
