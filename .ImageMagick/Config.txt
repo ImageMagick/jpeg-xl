@@ -1,5 +1,23 @@
 [DYNAMIC_LIBRARY]
 
+[VERSION]
+0.11.1
+
+[RELEASE_DATE]
+2024-11-26
+
+[PRODUCT_NAME]
+libjxl
+
+[COMPANY_NAME]
+The JPEG XL Project
+
+[URL]
+https://github.com/libjxl/libjxl
+
+[COPYRIGHT]
+Copyright (c) the JPEG XL Project
+
 [LICENSE_FILE]
 LICENSE
 
