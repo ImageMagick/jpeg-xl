@@ -46,7 +46,6 @@ lib\include\jxl -> jxl
 doc\
 examples\
 lib\extras\
-lib\jpegli\
 lib\jxl\ac_strategy_test.cc
 lib\jxl\alpha_test.cc
 lib\jxl\ans_common_test.cc
@@ -64,9 +63,11 @@ lib\jxl\color_management_test.cc
 lib\jxl\convolve_test.cc
 lib\jxl\data_parallel_test.cc
 lib\jxl\dec_external_image_gbench.cc
+lib\jxl\dct_gbench.cc
 lib\jxl\dct_test.cc
 lib\jxl\decode_test.cc
 lib\jxl\encode_test.cc
+lib\jxl\enc_bit_writer_test.cc
 lib\jxl\enc_external_image_gbench.cc
 lib\jxl\enc_external_image_test.cc
 lib\jxl\enc_gaborish_test.cc
