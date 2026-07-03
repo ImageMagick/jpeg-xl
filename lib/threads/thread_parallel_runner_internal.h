@@ -40,8 +40,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <mutex>               //NOLINT
-#include <thread>              //NOLINT
+#include <mutex>   //NOLINT
+#include <thread>  //NOLINT
 #include <vector>
 
 namespace jpegxl {
@@ -59,11 +59,7 @@ class ThreadParallelRunner {
   // "num_worker_threads" defaults to one per hyperthread. If zero, all tasks
   // run on the main thread.
   explicit ThreadParallelRunner(
-#if defined(__EMSCRIPTEN__)
-      int num_worker_threads = 0);
-#else
       int num_worker_threads = std::thread::hardware_concurrency());
-#endif
 
   // Waits for all threads to exit.
   ~ThreadParallelRunner();
@@ -147,7 +143,8 @@ class ThreadParallelRunner {
   const uint32_t num_worker_threads_;  // == threads_.size()
   const uint32_t num_threads_;
 
-  std::atomic<int> depth_{0};  // detects if Run is re-entered (not supported).
+  std::atomic<uint32_t> depth_{
+      0};  // detects if Run is re-entered (not supported).
 
   std::mutex mutex_;  // guards both cv and their variables.
   std::condition_variable workers_ready_cv_;
