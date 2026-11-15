@@ -50,6 +50,7 @@ lib\jxl\ac_strategy_test.cc
 lib\jxl\alpha_test.cc
 lib\jxl\ans_common_test.cc
 lib\jxl\ans_test.cc
+lib\jxl\base\span_test.cc
 lib\jxl\bits_test.cc
 lib\jxl\bit_reader_test.cc
 lib\jxl\blending_test.cc
