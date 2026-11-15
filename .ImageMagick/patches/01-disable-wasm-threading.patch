@@ -1,0 +1,44 @@
+diff --git a/lib/threads/resizable_parallel_runner.cc b/lib/threads/resizable_parallel_runner.cc
+index 238ccbf..824f76c 100644
+--- a/lib/threads/resizable_parallel_runner.cc
++++ b/lib/threads/resizable_parallel_runner.cc
+@@ -196,3 +196,7 @@ JxlResizableParallelRunnerSuggestThreads(uint64_t xsize, uint64_t ysize) {
+   // ~one thread per group.
++#if defined(__EMSCRIPTEN__)
++  return std::min<uint64_t>(0,
++#else
+   return std::min<uint64_t>(std::thread::hardware_concurrency(),
++#endif
+                             xsize * ysize / (256 * 256));
+diff --git a/lib/threads/thread_parallel_runner.cc b/lib/threads/thread_parallel_runner.cc
+index 558c9db..baebb93 100644
+--- a/lib/threads/thread_parallel_runner.cc
++++ b/lib/threads/thread_parallel_runner.cc
+@@ -87,3 +87,7 @@ void* JxlThreadParallelRunnerCreate(const JxlMemoryManager* memory_manager,
+   jpegxl::ThreadParallelRunner* runner =
++  #if defined(__EMSCRIPTEN__)
++      new (alloc) jpegxl::ThreadParallelRunner(0);
++  #else
+       new (alloc) jpegxl::ThreadParallelRunner(num_worker_threads);
++  #endif
+   runner->memory_manager = local_memory_manager;
+@@ -107,3 +111,7 @@ void JxlThreadParallelRunnerDestroy(void* runner_opaque) {
+ size_t JxlThreadParallelRunnerDefaultNumWorkerThreads() {
++#if defined(__EMSCRIPTEN__)
++  return 0;
++#else
+   return std::thread::hardware_concurrency();
++#endif
+ }
+diff --git a/lib/threads/thread_parallel_runner_internal.h b/lib/threads/thread_parallel_runner_internal.h
+index 7af4319..71734d2 100644
+--- a/lib/threads/thread_parallel_runner_internal.h
++++ b/lib/threads/thread_parallel_runner_internal.h
+@@ -61,3 +61,7 @@ class ThreadParallelRunner {
+   explicit ThreadParallelRunner(
++#if defined(__EMSCRIPTEN__)
++      int num_worker_threads = 0);
++#else
+       int num_worker_threads = std::thread::hardware_concurrency());
++#endif
+ 
